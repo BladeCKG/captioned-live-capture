@@ -363,6 +363,15 @@ def paragraph_similarity(left: str, right: str) -> float:
     return line_similarity(left.replace("\n", " "), right.replace("\n", " "))
 
 
+def paragraph_contains(left: str, right: str) -> bool:
+    left_norm = normalized_line(left)
+    right_norm = normalized_line(right)
+    if not left_norm or not right_norm:
+        return False
+    shorter, longer = sorted((left_norm, right_norm), key=len)
+    return len(shorter) >= 30 and shorter in longer
+
+
 def paragraphs_related(left: str, right: str) -> bool:
     left_norm = normalized_line(left)
     right_norm = normalized_line(right)
@@ -431,7 +440,10 @@ def merge_capture_text(existing: str, captured: str, preserve_tail: bool = False
         if replacement_index is not None:
             paragraphs[replacement_index] = paragraph
             continue
-        if any(paragraph_similarity(paragraph, existing_paragraph) >= 0.88 for existing_paragraph in paragraphs[-6:]):
+        duplicate_index = find_duplicate_paragraph_index(paragraphs, paragraph)
+        if duplicate_index is not None:
+            if should_replace_duplicate_paragraph(paragraphs[duplicate_index], paragraph):
+                paragraphs[duplicate_index] = paragraph
             continue
         paragraphs.append(paragraph)
 
@@ -449,6 +461,22 @@ def should_replace_tail_paragraph(existing_tail: str, candidate_tail: str) -> bo
     if len(candidate_tail) > len(existing_tail) + 20:
         return True
     return False
+
+
+def find_duplicate_paragraph_index(paragraphs: list[str], candidate: str) -> int | None:
+    for index in range(max(0, len(paragraphs) - 12), len(paragraphs)):
+        existing = paragraphs[index]
+        if paragraph_contains(existing, candidate) or paragraph_similarity(existing, candidate) >= 0.74:
+            return index
+    return None
+
+
+def should_replace_duplicate_paragraph(existing: str, candidate: str) -> bool:
+    if len(candidate) <= len(existing) + 20:
+        return False
+    if paragraph_contains(existing, candidate):
+        return True
+    return paragraph_similarity(existing, candidate) >= 0.82
 
 
 def find_replaceable_fragment_index(paragraphs: list[str], candidate: str) -> int | None:
