@@ -4,6 +4,10 @@ A small Windows Python UI that captures Caption.Ed with Windows Graphics Capture
 
 The UI is intentionally minimal: only the capture buttons stay visible, and the captured text fills the rest of the window.
 
+Each capture is compared fuzzily with the existing text. Paragraphs that already have a blank line before and after them are treated as finalized and are not changed again; only the trailing in-progress paragraph can be improved, and new paragraphs are appended.
+
+Use the `Auto-scroll` checkbox to choose whether the text view jumps to the latest captured text after updates.
+
 The default target is discovered automatically by:
 
 - Class: `Chrome_RenderWidgetHostHWND`
@@ -40,7 +44,7 @@ py capture_text_app.py
 Or override the target window:
 
 ```powershell
-py capture_text_app.py --process-name Caption.Ed.exe --class-name Chrome_RenderWidgetHostHWND --interval 1
+py capture_text_app.py --process-name Caption.Ed.exe --class-name Chrome_RenderWidgetHostHWND --interval 0.3
 ```
 
 If you really need to force one specific handle:

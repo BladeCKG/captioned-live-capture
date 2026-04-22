@@ -1,4 +1,5 @@
 import argparse
+import difflib
 import os
 import re
 import sys
@@ -41,7 +42,7 @@ except ImportError:  # pragma: no cover - shown in the UI at runtime
 DEFAULT_CLASS = "Chrome_RenderWidgetHostHWND"
 DEFAULT_PROCESS_NAME = "Caption.Ed.exe"
 DEFAULT_WINDOW_NAME = "Caption.Ed"
-DEFAULT_INTERVAL_SECONDS = 0.5
+DEFAULT_INTERVAL_SECONDS = 0.3
 COMMON_TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 SPEAKER_LINE_PATTERN = re.compile(r"\bspe[a-z]*ker\s*\d*\b", re.IGNORECASE)
 WORD_PATTERN = re.compile(r"[A-Za-z]+(?:['-][A-Za-z]+)?")
@@ -342,6 +343,157 @@ def clean_captured_text(text: str) -> str:
     return "\n".join(lines).strip()
 
 
+def normalized_line(line: str) -> str:
+    return " ".join(WORD_PATTERN.findall(line.casefold()))
+
+
+def line_similarity(left: str, right: str) -> float:
+    normalized_left = normalized_line(left)
+    normalized_right = normalized_line(right)
+    if not normalized_left or not normalized_right:
+        return 1.0 if normalized_left == normalized_right else 0.0
+    return difflib.SequenceMatcher(None, normalized_left, normalized_right).ratio()
+
+
+def split_paragraphs(text: str) -> list[str]:
+    return [paragraph.strip() for paragraph in re.split(r"\n\s*\n+", text.strip()) if paragraph.strip()]
+
+
+def paragraph_similarity(left: str, right: str) -> float:
+    return line_similarity(left.replace("\n", " "), right.replace("\n", " "))
+
+
+def paragraphs_related(left: str, right: str) -> bool:
+    left_norm = normalized_line(left)
+    right_norm = normalized_line(right)
+    if not left_norm or not right_norm:
+        return False
+    if left_norm in right_norm or right_norm in left_norm:
+        return True
+    return difflib.SequenceMatcher(None, left_norm, right_norm).ratio() >= 0.52
+
+
+def merge_capture_text(existing: str, captured: str, preserve_tail: bool = False) -> tuple[str, bool]:
+    captured = captured.strip()
+    if not captured or captured == "(No text detected yet.)":
+        return existing, False
+
+    existing = existing.strip()
+    if not existing:
+        return captured, True
+
+    existing_paragraphs = split_paragraphs(existing)
+    captured_paragraphs = split_paragraphs(captured)
+    if not captured_paragraphs:
+        return existing, False
+
+    locked_existing = existing_paragraphs[:-1]
+    tail_existing = existing_paragraphs[-1] if existing_paragraphs else ""
+    merged_tail = tail_existing
+    replacement_candidates: list[str] = []
+    additions: list[str] = []
+
+    tail_match_index = -1
+    tail_match_score = 0.0
+    for index, paragraph in enumerate(captured_paragraphs):
+        score = paragraph_similarity(tail_existing, paragraph)
+        if score > tail_match_score:
+            tail_match_score = score
+            tail_match_index = index
+
+    tail_matches = tail_match_index >= 0 and paragraphs_related(tail_existing, captured_paragraphs[tail_match_index])
+
+    if tail_matches:
+        candidate_tail = captured_paragraphs[tail_match_index]
+        if not preserve_tail and should_replace_tail_paragraph(tail_existing, candidate_tail):
+            merged_tail = candidate_tail
+        replacement_candidates = captured_paragraphs[:tail_match_index]
+        additions = captured_paragraphs[tail_match_index + 1 :]
+    else:
+        last_locked = locked_existing[-1] if locked_existing else ""
+        start_index = 0
+        if last_locked:
+            for index, paragraph in enumerate(captured_paragraphs):
+                if paragraph_similarity(last_locked, paragraph) >= 0.72:
+                    start_index = index + 1
+        additions = captured_paragraphs[start_index:]
+
+    paragraphs = locked_existing + [merged_tail]
+    for paragraph in replacement_candidates:
+        replacement_index = find_replaceable_fragment_index(paragraphs, paragraph)
+        if replacement_index is not None:
+            paragraphs[replacement_index] = paragraph
+
+    for paragraph in additions:
+        if not paragraph:
+            continue
+        replacement_index = find_replaceable_fragment_index(paragraphs, paragraph)
+        if replacement_index is not None:
+            paragraphs[replacement_index] = paragraph
+            continue
+        if any(paragraph_similarity(paragraph, existing_paragraph) >= 0.88 for existing_paragraph in paragraphs[-6:]):
+            continue
+        paragraphs.append(paragraph)
+
+    merged = "\n\n".join(paragraphs).strip()
+    return merged, merged != existing
+
+
+def should_replace_tail_paragraph(existing_tail: str, candidate_tail: str) -> bool:
+    if not candidate_tail.strip():
+        return False
+    existing_words = WORD_PATTERN.findall(existing_tail)
+    candidate_words = WORD_PATTERN.findall(candidate_tail)
+    if len(candidate_words) > len(existing_words):
+        return True
+    if len(candidate_tail) > len(existing_tail) + 20:
+        return True
+    return False
+
+
+def find_replaceable_fragment_index(paragraphs: list[str], candidate: str) -> int | None:
+    for index in range(max(0, len(paragraphs) - 8), len(paragraphs)):
+        existing = paragraphs[index]
+        if is_finished_paragraph(existing):
+            continue
+        if candidate_extends_fragment(existing, candidate):
+            return index
+    return None
+
+
+def is_finished_paragraph(paragraph: str) -> bool:
+    words = WORD_PATTERN.findall(paragraph)
+    stripped = paragraph.strip()
+    if len(words) < 6:
+        return False
+    return bool(re.search(r"[.!?][\"')\]]*$", stripped))
+
+
+def candidate_extends_fragment(fragment: str, candidate: str) -> bool:
+    fragment_norm = normalized_line(fragment)
+    candidate_norm = normalized_line(candidate)
+    if not fragment_norm or not candidate_norm:
+        return False
+    if len(candidate_norm) <= len(fragment_norm) + 8:
+        return False
+    if fragment_norm in candidate_norm:
+        return True
+
+    fragment_words = fragment_norm.split()
+    candidate_words = candidate_norm.split()
+    if len(fragment_words) <= 8:
+        prefix = " ".join(candidate_words[: max(len(fragment_words) + 3, 1)])
+        if difflib.SequenceMatcher(None, fragment_norm, prefix).ratio() >= 0.58:
+            return True
+
+    window_size = min(max(len(fragment_words) + 3, 4), len(candidate_words))
+    best_score = 0.0
+    for start in range(0, max(1, len(candidate_words) - window_size + 1)):
+        window = " ".join(candidate_words[start : start + window_size])
+        best_score = max(best_score, difflib.SequenceMatcher(None, fragment_norm, window).ratio())
+    return best_score >= 0.62
+
+
 def is_ui_noise_line(line: str) -> bool:
     lowered = line.casefold()
     if "untitled recording" in lowered:
@@ -472,6 +624,7 @@ class CaptureApp(tk.Tk):
         self.process_var = tk.StringVar(value=initial_target.process_name)
         self.window_name_var = tk.StringVar(value=initial_target.window_name)
         self.interval_var = tk.StringVar(value=str(interval_seconds))
+        self.autoscroll_var = tk.BooleanVar(value=True)
         self.status_var = tk.StringVar(value="Ready")
         self.text_font = tkfont.Font(family="Consolas", size=11)
 
@@ -493,6 +646,7 @@ class CaptureApp(tk.Tk):
 
         ttk.Button(button_row, text="Capture Once", command=self._capture_once).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(button_row, text="Target Info", command=self._show_target_info).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Checkbutton(button_row, text="Auto-scroll", variable=self.autoscroll_var).pack(side=tk.LEFT, padx=(12, 0))
 
         ttk.Label(button_row, textvariable=self.status_var, anchor=tk.E).pack(side=tk.RIGHT)
 
@@ -562,14 +716,31 @@ class CaptureApp(tk.Tk):
         self.after(0, self._set_text, text)
 
     def _set_text(self, value: str) -> None:
-        if self.text.tag_ranges(tk.SEL):
-            self.status_var.set(f"Selection active; update paused at {time.strftime('%H:%M:%S')}")
+        existing = self.text.get("1.0", tk.END).strip()
+        selection_active = bool(self.text.tag_ranges(tk.SEL))
+        merged, changed = merge_capture_text(existing, value, preserve_tail=selection_active)
+        if not changed:
+            self.status_var.set(f"No new text at {time.strftime('%H:%M:%S')}")
             return
 
-        self._fit_text_font(value)
+        self._fit_text_font(merged)
+        if selection_active:
+            if merged.startswith(existing):
+                self.text.insert(tk.END, merged[len(existing) :])
+                self._maybe_autoscroll()
+                self.status_var.set(f"Appended at {time.strftime('%H:%M:%S')}")
+            else:
+                self.status_var.set(f"Selection active; tail update deferred at {time.strftime('%H:%M:%S')}")
+            return
+
         self.text.delete("1.0", tk.END)
-        self.text.insert(tk.END, value)
+        self.text.insert(tk.END, merged)
+        self._maybe_autoscroll()
         self.status_var.set(f"Updated at {time.strftime('%H:%M:%S')}")
+
+    def _maybe_autoscroll(self) -> None:
+        if self.autoscroll_var.get():
+            self.text.see(tk.END)
 
     def _fit_text_font(self, value: str) -> None:
         lines = value.splitlines() or [""]
