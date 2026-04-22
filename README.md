@@ -1,6 +1,6 @@
 # Captioned Live Capture
 
-A small Windows Python UI that OCR-captures the visible Caption.Ed render window and displays the detected text.
+A small Windows Python UI that captures Caption.Ed with Windows Graphics Capture, OCRs the frame, and displays the detected text.
 
 The UI is intentionally minimal: only the capture buttons stay visible, and the captured text fills the rest of the window.
 
@@ -51,4 +51,6 @@ py capture_text_app.py --hwnd 394966
 
 ## Notes
 
-`Chrome_RenderWidgetHostHWND` itself is only a render surface. Standard Win32 APIs usually return only `Chrome Legacy Window`, not the rendered caption text. This version uses screenshot OCR because Caption.Ed did not expose the text through UI Automation or a DevTools endpoint.
+`Chrome_RenderWidgetHostHWND` itself is only a render surface. Standard Win32 APIs usually return only `Chrome Legacy Window`, not the rendered caption text.
+
+The app now tries Windows Graphics Capture first using the Caption.Ed window title. This is the correct Windows compositor capture path for windows that are covered by other windows or off-screen-but-not-minimized. If Windows Graphics Capture is unavailable or fails, it falls back to visible screenshot OCR of the Chromium render widget.

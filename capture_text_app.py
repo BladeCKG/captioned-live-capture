@@ -8,8 +8,9 @@ from tkinter import font as tkfont
 from tkinter import messagebox, ttk
 
 try:
-    from PIL import ImageGrab, ImageOps
+    from PIL import Image, ImageGrab, ImageOps
 except ImportError:  # pragma: no cover - shown in the UI at runtime
+    Image = None
     ImageGrab = None
     ImageOps = None
 
@@ -17,6 +18,13 @@ try:
     import pytesseract
 except ImportError:  # pragma: no cover - shown in the UI at runtime
     pytesseract = None
+
+try:
+    from windows_capture import Frame, InternalCaptureControl, WindowsCapture
+except ImportError:  # pragma: no cover - normal screenshot fallback still works
+    Frame = None
+    InternalCaptureControl = None
+    WindowsCapture = None
 
 try:
     import win32con
@@ -30,6 +38,7 @@ except ImportError:  # pragma: no cover - shown in the UI at runtime
 
 DEFAULT_CLASS = "Chrome_RenderWidgetHostHWND"
 DEFAULT_PROCESS_NAME = "Caption.Ed.exe"
+DEFAULT_WINDOW_NAME = "Caption.Ed"
 DEFAULT_INTERVAL_SECONDS = 0.5
 COMMON_TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
@@ -43,6 +52,7 @@ class TargetWindow:
     hwnd: int | None = None
     expected_class: str = DEFAULT_CLASS
     process_name: str = DEFAULT_PROCESS_NAME
+    window_name: str = DEFAULT_WINDOW_NAME
 
 
 def get_root_hwnd(hwnd: int) -> int:
@@ -176,6 +186,53 @@ def dependency_error() -> str | None:
     return None
 
 
+def capture_visible_window(hwnd: int):
+    left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+    if right <= left or bottom <= top:
+        return None
+    return ImageGrab.grab(bbox=(left, top, right, bottom))
+
+
+def capture_with_windows_graphics(target: TargetWindow):
+    if WindowsCapture is None or ImageGrab is None:
+        return None
+
+    window_name = target.window_name.strip()
+    if not window_name:
+        return None
+
+    done = threading.Event()
+    result = {"image": None, "error": None}
+    capture_control = None
+
+    try:
+        capture = WindowsCapture(cursor_capture=False, draw_border=None, window_name=window_name)
+
+        @capture.event
+        def on_frame_arrived(frame: Frame, capture_control: InternalCaptureControl) -> None:
+            try:
+                rgb = frame.frame_buffer[:, :, :3][:, :, ::-1].copy()
+                result["image"] = Image.fromarray(rgb, "RGB")
+            except Exception as exc:
+                result["error"] = exc
+            finally:
+                done.set()
+                capture_control.stop()
+
+        @capture.event
+        def on_closed() -> None:
+            done.set()
+
+        capture_control = capture.start_free_threaded()
+        if not done.wait(3):
+            capture_control.stop()
+            done.wait(1)
+    except Exception as exc:
+        result["error"] = exc
+
+    return result["image"]
+
+
 def preprocess_for_ocr(image):
     scale = 2
     image = image.resize((image.width * scale, image.height * scale))
@@ -188,7 +245,7 @@ def clean_captured_text(text: str) -> str:
     previous_blank = False
 
     for line in text.splitlines():
-        cleaned = "" if "| Speaker" in line else line
+        cleaned = "" if "Speaker " in line else line
         is_blank = not cleaned.strip()
         if is_blank and previous_blank:
             continue
@@ -223,11 +280,11 @@ def capture_window_text(target: TargetWindow) -> str:
     if win32gui.IsIconic(root_hwnd):
         return "Caption.Ed is minimized. Restore it so the visible pixels can be OCR-captured."
 
-    left, top, right, bottom = win32gui.GetWindowRect(hwnd)
-    if right <= left or bottom <= top:
-        return f"Window has invalid bounds: {left}, {top}, {right}, {bottom}"
+    image = capture_with_windows_graphics(target) or capture_visible_window(hwnd)
+    if image is None:
+        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+        return f"Could not capture window bounds: {left}, {top}, {right}, {bottom}"
 
-    image = ImageGrab.grab(bbox=(left, top, right, bottom))
     image = preprocess_for_ocr(image)
 
     try:
@@ -260,6 +317,7 @@ class CaptureApp(tk.Tk):
         self.hwnd_var = tk.StringVar(value="" if initial_target.hwnd is None else str(initial_target.hwnd))
         self.class_var = tk.StringVar(value=initial_target.expected_class)
         self.process_var = tk.StringVar(value=initial_target.process_name)
+        self.window_name_var = tk.StringVar(value=initial_target.window_name)
         self.interval_var = tk.StringVar(value=str(interval_seconds))
         self.status_var = tk.StringVar(value="Ready")
         self.text_font = tkfont.Font(family="Consolas", size=11)
@@ -312,6 +370,7 @@ class CaptureApp(tk.Tk):
             hwnd=hwnd,
             expected_class=self.class_var.get().strip(),
             process_name=self.process_var.get().strip(),
+            window_name=self.window_name_var.get().strip(),
         )
 
     def _start(self) -> None:
@@ -388,6 +447,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hwnd", type=lambda value: int(value, 0), default=None)
     parser.add_argument("--class-name", default=DEFAULT_CLASS)
     parser.add_argument("--process-name", default=DEFAULT_PROCESS_NAME)
+    parser.add_argument("--window-name", default=DEFAULT_WINDOW_NAME)
     parser.add_argument("--interval", type=float, default=DEFAULT_INTERVAL_SECONDS)
     return parser.parse_args()
 
@@ -399,6 +459,7 @@ def main() -> None:
             hwnd=args.hwnd,
             expected_class=args.class_name,
             process_name=args.process_name,
+            window_name=args.window_name,
         ),
         interval_seconds=args.interval,
     )
