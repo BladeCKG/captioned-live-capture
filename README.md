@@ -61,6 +61,12 @@ py capture_text_app.py --hwnd 394966
 
 ## Portable Build
 
+Create the portable Windows build with:
+
+```powershell
+.\build_release.ps1
+```
+
 The portable Windows build is created at:
 
 ```text
