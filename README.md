@@ -49,6 +49,22 @@ If you really need to force one specific handle:
 py capture_text_app.py --hwnd 394966
 ```
 
+## Portable Build
+
+The portable Windows build is created at:
+
+```text
+release\CaptionedLiveCapture-portable.zip
+```
+
+To use it on another PC, extract the zip and run:
+
+```text
+CaptionedLiveCapture.exe
+```
+
+The portable folder includes the Python runtime, Python packages, and Tesseract OCR runtime, so Python and Tesseract do not need to be installed separately.
+
 ## Notes
 
 `Chrome_RenderWidgetHostHWND` itself is only a render surface. Standard Win32 APIs usually return only `Chrome Legacy Window`, not the rendered caption text.

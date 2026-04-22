@@ -1,6 +1,7 @@
 import argparse
 import os
 import re
+import sys
 import threading
 import time
 import tkinter as tk
@@ -100,8 +101,31 @@ COMMON_TRANSCRIPT_WORDS = {
 ALLOWED_UPPERCASE_WORDS = {"CEO", "SS"}
 
 
-if pytesseract is not None and os.path.exists(COMMON_TESSERACT_PATH):
-    pytesseract.pytesseract.tesseract_cmd = COMMON_TESSERACT_PATH
+def app_base_dir() -> str:
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def bundled_tesseract_path() -> str:
+    return os.path.join(app_base_dir(), "tesseract", "tesseract.exe")
+
+
+def configure_tesseract() -> None:
+    if pytesseract is None:
+        return
+
+    candidates = [bundled_tesseract_path(), COMMON_TESSERACT_PATH]
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            pytesseract.pytesseract.tesseract_cmd = candidate
+            tessdata = os.path.join(os.path.dirname(candidate), "tessdata")
+            if os.path.isdir(tessdata):
+                os.environ.setdefault("TESSDATA_PREFIX", tessdata)
+            return
+
+
+configure_tesseract()
 
 
 @dataclass(frozen=True)
@@ -421,7 +445,9 @@ def capture_window_text(target: TargetWindow) -> str:
             "Tesseract OCR is not installed or is not on PATH.\n\n"
             "Install it with:\n"
             "winget install UB-Mannheim.TesseractOCR\n\n"
-            f"The app also auto-detects: {COMMON_TESSERACT_PATH}"
+            "The app auto-detects bundled Tesseract at:\n"
+            f"{bundled_tesseract_path()}\n\n"
+            f"It also checks: {COMMON_TESSERACT_PATH}"
         )
     except Exception as exc:
         return f"OCR failed: {exc}"

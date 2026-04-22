@@ -5,3 +5,8 @@ __pycache__/
 
 tmp_capture_tests/
 @AutomationLog.txt
+
+build/
+dist/
+release/
+*.spec
