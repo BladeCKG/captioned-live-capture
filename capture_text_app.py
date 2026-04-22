@@ -372,6 +372,27 @@ def paragraph_contains(left: str, right: str) -> bool:
     return len(shorter) >= 30 and shorter in longer
 
 
+def paragraph_word_set(text: str) -> set[str]:
+    return {word for word in normalized_line(text).split() if len(word) > 2}
+
+
+def paragraph_overlap(left: str, right: str) -> float:
+    left_words = paragraph_word_set(left)
+    right_words = paragraph_word_set(right)
+    if not left_words or not right_words:
+        return 0.0
+    intersection = len(left_words & right_words)
+    return intersection / min(len(left_words), len(right_words))
+
+
+def paragraphs_duplicate(left: str, right: str) -> bool:
+    if paragraph_contains(left, right):
+        return True
+    if paragraph_similarity(left, right) >= 0.68:
+        return True
+    return paragraph_overlap(left, right) >= 0.72
+
+
 def paragraphs_related(left: str, right: str) -> bool:
     left_norm = normalized_line(left)
     right_norm = normalized_line(right)
@@ -466,7 +487,7 @@ def should_replace_tail_paragraph(existing_tail: str, candidate_tail: str) -> bo
 def find_duplicate_paragraph_index(paragraphs: list[str], candidate: str) -> int | None:
     for index in range(max(0, len(paragraphs) - 12), len(paragraphs)):
         existing = paragraphs[index]
-        if paragraph_contains(existing, candidate) or paragraph_similarity(existing, candidate) >= 0.74:
+        if paragraphs_duplicate(existing, candidate):
             return index
     return None
 
@@ -476,7 +497,7 @@ def should_replace_duplicate_paragraph(existing: str, candidate: str) -> bool:
         return False
     if paragraph_contains(existing, candidate):
         return True
-    return paragraph_similarity(existing, candidate) >= 0.82
+    return paragraph_similarity(existing, candidate) >= 0.78 or paragraph_overlap(existing, candidate) >= 0.80
 
 
 def find_replaceable_fragment_index(paragraphs: list[str], candidate: str) -> int | None:
@@ -692,11 +713,20 @@ class CaptureApp(tk.Tk):
         text_frame = ttk.Frame(root)
         text_frame.pack(fill=tk.BOTH, expand=True)
 
-        self.text = tk.Text(text_frame, wrap=tk.WORD, font=self.text_font, undo=False)
+        self.text = tk.Text(
+            text_frame,
+            wrap=tk.WORD,
+            font=self.text_font,
+            undo=False,
+            exportselection=False,
+            selectbackground="#2f6fed",
+            selectforeground="#ffffff",
+        )
         self.text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=self.text.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.text.configure(yscrollcommand=scrollbar.set)
+        self.text.tag_configure("persistent_selection", background="#2f6fed", foreground="#ffffff")
         self.text.bind("<ButtonRelease-1>", self._set_pointer_from_click, add="+")
 
     def _maximize(self) -> None:
@@ -794,7 +824,7 @@ class CaptureApp(tk.Tk):
     def _maybe_auto_copy_selection(self) -> None:
         if not self.auto_copy_var.get():
             return
-        ranges = self.text.tag_ranges(tk.SEL)
+        ranges = self.text.tag_ranges("persistent_selection") or self.text.tag_ranges(tk.SEL)
         if not ranges:
             return
         selected_text = self.text.get(ranges[0], ranges[-1]).strip()
@@ -807,6 +837,7 @@ class CaptureApp(tk.Tk):
         if self.text.tag_ranges(tk.SEL):
             return
         self.pointer_active = True
+        self.text.tag_remove("persistent_selection", "1.0", tk.END)
         self.text.mark_set(self.pointer_mark, tk.INSERT)
         self.text.mark_gravity(self.pointer_mark, tk.LEFT)
         self._select_pointer_to_end()
@@ -834,6 +865,8 @@ class CaptureApp(tk.Tk):
             return
         self.text.tag_remove(tk.SEL, "1.0", tk.END)
         self.text.tag_add(tk.SEL, self.pointer_mark, "end-1c")
+        self.text.tag_remove("persistent_selection", "1.0", tk.END)
+        self.text.tag_add("persistent_selection", self.pointer_mark, "end-1c")
         self.text.mark_set(tk.INSERT, "end-1c")
         self.text.see(self.pointer_mark)
 
