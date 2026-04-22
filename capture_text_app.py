@@ -1,5 +1,6 @@
 import argparse
 import os
+import re
 import threading
 import time
 import tkinter as tk
@@ -41,6 +42,7 @@ DEFAULT_PROCESS_NAME = "Caption.Ed.exe"
 DEFAULT_WINDOW_NAME = "Caption.Ed"
 DEFAULT_INTERVAL_SECONDS = 0.5
 COMMON_TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+SPEAKER_LINE_PATTERN = re.compile(r"\bspe[a-z]*ker\s*\d*\b", re.IGNORECASE)
 
 
 if pytesseract is not None and os.path.exists(COMMON_TESSERACT_PATH):
@@ -242,15 +244,19 @@ def preprocess_for_ocr(image):
 
 def clean_captured_text(text: str) -> str:
     lines = []
-    previous_blank = False
 
     for line in text.splitlines():
-        cleaned = "" if "Speaker " in line else line
+        if SPEAKER_LINE_PATTERN.search(line):
+            if lines and lines[-1] != "":
+                lines.append("")
+            if lines and lines[-1] == "":
+                lines.append("")
+            continue
+        cleaned = line.rstrip()
         is_blank = not cleaned.strip()
-        if is_blank and previous_blank:
+        if is_blank and lines and lines[-1] == "":
             continue
         lines.append(cleaned)
-        previous_blank = is_blank
 
     return "\n".join(lines).strip()
 
