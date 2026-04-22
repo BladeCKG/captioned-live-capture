@@ -625,6 +625,8 @@ class CaptureApp(tk.Tk):
         self.window_name_var = tk.StringVar(value=initial_target.window_name)
         self.interval_var = tk.StringVar(value=str(interval_seconds))
         self.autoscroll_var = tk.BooleanVar(value=True)
+        self.always_on_top_var = tk.BooleanVar(value=False)
+        self.auto_copy_var = tk.BooleanVar(value=False)
         self.status_var = tk.StringVar(value="Ready")
         self.text_font = tkfont.Font(family="Consolas", size=11)
         self.pointer_mark = "capture_pointer"
@@ -649,6 +651,13 @@ class CaptureApp(tk.Tk):
         ttk.Button(button_row, text="Capture Once", command=self._capture_once).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(button_row, text="Target Info", command=self._show_target_info).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Checkbutton(button_row, text="Auto-scroll", variable=self.autoscroll_var).pack(side=tk.LEFT, padx=(12, 0))
+        ttk.Checkbutton(
+            button_row,
+            text="Always top",
+            variable=self.always_on_top_var,
+            command=self._apply_always_on_top,
+        ).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Checkbutton(button_row, text="Auto-copy", variable=self.auto_copy_var).pack(side=tk.LEFT, padx=(8, 0))
 
         ttk.Label(button_row, textvariable=self.status_var, anchor=tk.E).pack(side=tk.RIGHT)
 
@@ -737,6 +746,7 @@ class CaptureApp(tk.Tk):
         self.text.insert(tk.END, merged)
         self._restore_pointer_selection(pointer_offset)
         self._maybe_autoscroll(force=True)
+        self._maybe_auto_copy_selection()
         self.status_var.set(f"Updated at {time.strftime('%H:%M:%S')}")
 
     def _maybe_autoscroll(self, force: bool = False) -> None:
@@ -749,6 +759,21 @@ class CaptureApp(tk.Tk):
     def _scroll_to_end(self) -> None:
         self.text.see("end-1c")
         self.text.yview_moveto(1.0)
+
+    def _apply_always_on_top(self) -> None:
+        self.attributes("-topmost", self.always_on_top_var.get())
+
+    def _maybe_auto_copy_selection(self) -> None:
+        if not self.auto_copy_var.get():
+            return
+        ranges = self.text.tag_ranges(tk.SEL)
+        if not ranges:
+            return
+        selected_text = self.text.get(ranges[0], ranges[-1]).strip()
+        if not selected_text:
+            return
+        self.clipboard_clear()
+        self.clipboard_append(selected_text)
 
     def _set_pointer_from_click(self, _event: tk.Event) -> None:
         if self.text.tag_ranges(tk.SEL):

@@ -8,6 +8,10 @@ Each capture is compared fuzzily with the existing text. Paragraphs that already
 
 Use the `Auto-scroll` checkbox to choose whether the text view jumps to the latest captured text after updates.
 
+Use `Always top` to keep the app above other windows.
+
+Use `Auto-copy` to copy the currently selected text to the clipboard after capture updates.
+
 Click inside the captured text to set the pointer. The pointer stays fixed at that clicked position, and each update selects text from that pointer to the latest captured text.
 
 The default target is discovered automatically by:
