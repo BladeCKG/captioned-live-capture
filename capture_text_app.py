@@ -841,6 +841,7 @@ class CaptureApp(tk.Tk):
         self.text.mark_set(self.pointer_mark, tk.INSERT)
         self.text.mark_gravity(self.pointer_mark, tk.LEFT)
         self._select_pointer_to_end()
+        self._maybe_auto_copy_selection()
         self.status_var.set("Pointer set from click")
 
     def _pointer_offset(self) -> int | None:
