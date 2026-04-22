@@ -43,6 +43,61 @@ DEFAULT_WINDOW_NAME = "Caption.Ed"
 DEFAULT_INTERVAL_SECONDS = 0.5
 COMMON_TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 SPEAKER_LINE_PATTERN = re.compile(r"\bspe[a-z]*ker\s*\d*\b", re.IGNORECASE)
+WORD_PATTERN = re.compile(r"[A-Za-z]+(?:['-][A-Za-z]+)?")
+COMMON_TRANSCRIPT_WORDS = {
+    "a",
+    "about",
+    "all",
+    "am",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "but",
+    "can",
+    "do",
+    "for",
+    "from",
+    "go",
+    "have",
+    "he",
+    "i",
+    "if",
+    "in",
+    "is",
+    "it",
+    "me",
+    "my",
+    "no",
+    "not",
+    "of",
+    "okay",
+    "on",
+    "or",
+    "our",
+    "right",
+    "so",
+    "that",
+    "the",
+    "then",
+    "there",
+    "this",
+    "to",
+    "uh",
+    "um",
+    "we",
+    "well",
+    "what",
+    "with",
+    "would",
+    "yeah",
+    "yes",
+    "you",
+    "your",
+}
+ALLOWED_UPPERCASE_WORDS = {"CEO", "SS"}
 
 
 if pytesseract is not None and os.path.exists(COMMON_TESSERACT_PATH):
@@ -256,9 +311,75 @@ def clean_captured_text(text: str) -> str:
         is_blank = not cleaned.strip()
         if is_blank and lines and lines[-1] == "":
             continue
+        if not is_blank and not looks_like_sentence_part(cleaned):
+            continue
         lines.append(cleaned)
 
     return "\n".join(lines).strip()
+
+
+def is_ui_noise_line(line: str) -> bool:
+    lowered = line.casefold()
+    if "untitled recording" in lowered:
+        return True
+    if "feedback" in lowered and "share" in lowered:
+        return True
+    if "processing audio" in lowered:
+        return True
+    if re.search(r"\b\d{1,2}/\d{1,2}/\d{4}\b", lowered):
+        return True
+    if re.fullmatch(r"[\W_]*\d+x[\W_]*", lowered):
+        return True
+    if re.search(r"\b\d{1,2}:\d{2}\b", lowered) and not WORD_PATTERN.findall(lowered):
+        return True
+    return False
+
+
+def looks_like_sentence_part(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return True
+    if is_ui_noise_line(stripped):
+        return False
+
+    words = WORD_PATTERN.findall(stripped)
+    letters = sum(ch.isalpha() for ch in stripped)
+    alnum = sum(ch.isalnum() for ch in stripped)
+    if letters < 4 or len(words) < 2:
+        return False
+
+    if alnum:
+        symbol_ratio = 1 - (alnum / len(stripped))
+        if symbol_ratio > 0.45:
+            return False
+
+    normalized_words = [word.casefold().strip("'-") for word in words]
+    common_word_count = sum(word in COMMON_TRANSCRIPT_WORDS for word in normalized_words)
+    short_word_count = sum(len(word) <= 2 for word in normalized_words)
+    malformed_word_count = sum(looks_malformed_word(word) for word in words)
+    if len(words) <= 6 and short_word_count / len(words) > 0.6:
+        return False
+    if len(words) >= 6 and malformed_word_count / len(words) > 0.25:
+        return False
+    if len(words) <= 5 and common_word_count == 0 and not re.search(r"[.!?]", stripped):
+        return False
+
+    average_word_length = sum(len(word) for word in words) / len(words)
+    return average_word_length >= 2.2
+
+
+def looks_malformed_word(word: str) -> bool:
+    if len(word) < 4:
+        return False
+    if word.upper() in ALLOWED_UPPERCASE_WORDS:
+        return False
+    if word.casefold() in COMMON_TRANSCRIPT_WORDS:
+        return False
+
+    uppercase_count = sum(ch.isupper() for ch in word)
+    if word.isupper():
+        return True
+    return uppercase_count >= 2
 
 
 def capture_window_text(target: TargetWindow) -> str:
