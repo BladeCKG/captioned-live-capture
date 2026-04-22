@@ -627,6 +627,8 @@ class CaptureApp(tk.Tk):
         self.autoscroll_var = tk.BooleanVar(value=True)
         self.status_var = tk.StringVar(value="Ready")
         self.text_font = tkfont.Font(family="Consolas", size=11)
+        self.pointer_mark = "capture_pointer"
+        self.pointer_active = False
 
         self._build_ui()
         self.after(0, self._maximize)
@@ -650,8 +652,15 @@ class CaptureApp(tk.Tk):
 
         ttk.Label(button_row, textvariable=self.status_var, anchor=tk.E).pack(side=tk.RIGHT)
 
-        self.text = tk.Text(root, wrap=tk.WORD, font=self.text_font, undo=False)
-        self.text.pack(fill=tk.BOTH, expand=True)
+        text_frame = ttk.Frame(root)
+        text_frame.pack(fill=tk.BOTH, expand=True)
+
+        self.text = tk.Text(text_frame, wrap=tk.WORD, font=self.text_font, undo=False)
+        self.text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=self.text.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.text.configure(yscrollcommand=scrollbar.set)
+        self.text.bind("<ButtonRelease-1>", self._set_pointer_from_click, add="+")
 
     def _maximize(self) -> None:
         try:
@@ -717,46 +726,63 @@ class CaptureApp(tk.Tk):
 
     def _set_text(self, value: str) -> None:
         existing = self.text.get("1.0", tk.END).strip()
-        selection_active = bool(self.text.tag_ranges(tk.SEL))
-        merged, changed = merge_capture_text(existing, value, preserve_tail=selection_active)
+        pointer_offset = self._pointer_offset()
+        merged, changed = merge_capture_text(existing, value)
         if not changed:
+            self._restore_pointer_selection(pointer_offset)
             self.status_var.set(f"No new text at {time.strftime('%H:%M:%S')}")
-            return
-
-        self._fit_text_font(merged)
-        if selection_active:
-            if merged.startswith(existing):
-                self.text.insert(tk.END, merged[len(existing) :])
-                self._maybe_autoscroll()
-                self.status_var.set(f"Appended at {time.strftime('%H:%M:%S')}")
-            else:
-                self.status_var.set(f"Selection active; tail update deferred at {time.strftime('%H:%M:%S')}")
             return
 
         self.text.delete("1.0", tk.END)
         self.text.insert(tk.END, merged)
-        self._maybe_autoscroll()
+        self._restore_pointer_selection(pointer_offset)
+        self._maybe_autoscroll(force=True)
         self.status_var.set(f"Updated at {time.strftime('%H:%M:%S')}")
 
-    def _maybe_autoscroll(self) -> None:
-        if self.autoscroll_var.get():
-            self.text.see(tk.END)
+    def _maybe_autoscroll(self, force: bool = False) -> None:
+        if not self.autoscroll_var.get():
+            return
+        if self.pointer_active and not force:
+            return
+        self.after_idle(self._scroll_to_end)
 
-    def _fit_text_font(self, value: str) -> None:
-        lines = value.splitlines() or [""]
-        longest_line = max((len(line) for line in lines), default=1)
-        height = max(self.text.winfo_height(), 1)
-        width = max(self.text.winfo_width(), 1)
+    def _scroll_to_end(self) -> None:
+        self.text.see("end-1c")
+        self.text.yview_moveto(1.0)
 
-        for size in range(11, 7, -1):
-            self.text_font.configure(size=size)
-            line_height = self.text_font.metrics("linespace") or size
-            char_width = max(self.text_font.measure("M"), 1)
-            wrapped_lines = sum(max(1, (len(line) * char_width) // width + 1) for line in lines)
-            if wrapped_lines * line_height <= height and longest_line:
-                return
+    def _set_pointer_from_click(self, _event: tk.Event) -> None:
+        if self.text.tag_ranges(tk.SEL):
+            return
+        self.pointer_active = True
+        self.text.mark_set(self.pointer_mark, tk.INSERT)
+        self.text.mark_gravity(self.pointer_mark, tk.LEFT)
+        self._select_pointer_to_end()
+        self.status_var.set("Pointer set from click")
 
-        self.text_font.configure(size=8)
+    def _pointer_offset(self) -> int | None:
+        if not self.pointer_active:
+            return None
+        try:
+            return int(self.text.count("1.0", self.pointer_mark, "chars")[0])
+        except (tk.TclError, TypeError):
+            return None
+
+    def _restore_pointer_selection(self, offset: int | None) -> None:
+        if offset is None:
+            return
+        text_length = int(self.text.count("1.0", tk.END, "chars")[0])
+        safe_offset = max(0, min(offset, max(0, text_length - 1)))
+        self.text.mark_set(self.pointer_mark, f"1.0+{safe_offset}c")
+        self.text.mark_gravity(self.pointer_mark, tk.LEFT)
+        self._select_pointer_to_end()
+
+    def _select_pointer_to_end(self) -> None:
+        if not self.pointer_active:
+            return
+        self.text.tag_remove(tk.SEL, "1.0", tk.END)
+        self.text.tag_add(tk.SEL, self.pointer_mark, "end-1c")
+        self.text.mark_set(tk.INSERT, "end-1c")
+        self.text.see(self.pointer_mark)
 
     def _show_target_info(self) -> None:
         target = self._read_target()

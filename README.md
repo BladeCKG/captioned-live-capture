@@ -8,6 +8,8 @@ Each capture is compared fuzzily with the existing text. Paragraphs that already
 
 Use the `Auto-scroll` checkbox to choose whether the text view jumps to the latest captured text after updates.
 
+Click inside the captured text to set the pointer. The pointer stays fixed at that clicked position, and each update selects text from that pointer to the latest captured text.
+
 The default target is discovered automatically by:
 
 - Class: `Chrome_RenderWidgetHostHWND`
