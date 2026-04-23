@@ -1,6 +1,5 @@
 param(
-    [string]$AppName = "CaptionedLiveCapture",
-    [string]$TesseractPath = "C:\Program Files\Tesseract-OCR"
+    [string]$AppName = "CaptionedLiveCapture"
 )
 
 $ErrorActionPreference = "Stop"
@@ -30,15 +29,6 @@ py -m PyInstaller --noconfirm --clean --windowed --name $AppName capture_text_ap
 if (!(Test-Path $appDistDir)) {
     throw "Build output was not created: $appDistDir"
 }
-
-if (!(Test-Path (Join-Path $TesseractPath "tesseract.exe"))) {
-    throw "Tesseract was not found at: $TesseractPath"
-}
-
-Write-Host "Bundling Tesseract OCR..."
-$bundledTesseract = Join-Path $appDistDir "tesseract"
-if (Test-Path $bundledTesseract) { Remove-Item -LiteralPath $bundledTesseract -Recurse -Force }
-Copy-Item -LiteralPath $TesseractPath -Destination $bundledTesseract -Recurse -Force
 
 Write-Host "Creating portable zip..."
 if (!(Test-Path $releaseDir)) { New-Item -ItemType Directory -Path $releaseDir | Out-Null }
