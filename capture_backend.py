@@ -70,7 +70,7 @@ class TranscriptAutomationSession:
         self.target_hwnd = hwnd
         self.root_hwnd = root_hwnd
         self.root_control = auto.ControlFromHandle(root_hwnd)
-        self.transcript_control = self.root_control.EditControl(Name="Transcript")
+        self.transcript_control = find_transcript_control(self.root_control)
         return None
 
     def extract_text(self) -> str:
@@ -80,7 +80,7 @@ class TranscriptAutomationSession:
 
         if not self.transcript_control.Exists(0, 0):
             self.root_control = auto.ControlFromHandle(self.root_hwnd)
-            self.transcript_control = self.root_control.EditControl(Name="Transcript")
+            self.transcript_control = find_transcript_control(self.root_control)
             if not self.transcript_control.Exists(0, 0):
                 return "Transcript control was not found through UI Automation."
 
@@ -274,6 +274,46 @@ def extract_text_controls(control) -> str:
 
     walk(control)
     return "".join(parts)
+
+
+def iter_controls_depth_first(control):
+    yield control
+    try:
+        for child in control.GetChildren():
+            yield from iter_controls_depth_first(child)
+    except Exception:
+        return
+
+
+def find_transcript_control(root_control):
+    candidates = []
+    for control in iter_controls_depth_first(root_control):
+        try:
+            name = (control.Name or "").strip()
+            automation_id = (control.AutomationId or "").strip()
+            control_type = (control.ControlTypeName or "").strip()
+        except Exception:
+            continue
+
+        if automation_id == "transcription-container":
+            candidates.append((4, control))
+            continue
+        if name == "Transcript":
+            score = 3
+            if control_type in {"EditControl", "DocumentControl", "GroupControl"}:
+                score = 5
+            candidates.append((score, control))
+            continue
+        if automation_id.startswith(PARAGRAPH_ID_PREFIX):
+            parent = getattr(control, "GetParentControl", lambda: None)()
+            if parent is not None:
+                candidates.append((2, parent))
+
+    if not candidates:
+        return root_control.Control(Name="Transcript")
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
 
 
 def normalize_transcript_paragraph(raw_paragraph: str) -> str:
