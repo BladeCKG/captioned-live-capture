@@ -30,6 +30,10 @@ TIMESTAMP_PREFIX_PATTERN = re.compile(
     r"^\s*(?:(?:\d+\s+(?:hours?|minutes?|seconds?))+\s*)+",
     re.IGNORECASE,
 )
+SPEAKER_BLOCK_PATTERN = re.compile(
+    r"Speaker\s+\d+\s+(?:(?:\d+\s+(?:hours?|minutes?|seconds?))\s+)+",
+    re.IGNORECASE,
+)
 SPEAKER_LINE_PATTERN = re.compile(r"^speaker\s+\d+\s*$", re.IGNORECASE)
 TIMESTAMP_LINE_PATTERN = re.compile(
     r"^(?:\d+\s+(?:hours?|minutes?|seconds?))(?:\s+\d+\s+(?:hours?|minutes?|seconds?))*\s*$",
@@ -52,6 +56,7 @@ class TranscriptAutomationSession:
         self.target_hwnd: int | None = None
         self.root_hwnd: int | None = None
         self.root_control = None
+        self.document_control = None
         self.transcript_control = None
 
     def refresh(self) -> str | None:
@@ -70,6 +75,7 @@ class TranscriptAutomationSession:
         self.target_hwnd = hwnd
         self.root_hwnd = root_hwnd
         self.root_control = auto.ControlFromHandle(root_hwnd)
+        self.document_control = self.root_control.DocumentControl()
         self.transcript_control = find_transcript_control(self.root_control)
         return None
 
@@ -80,6 +86,7 @@ class TranscriptAutomationSession:
 
         if not self.transcript_control.Exists(0, 0):
             self.root_control = auto.ControlFromHandle(self.root_hwnd)
+            self.document_control = self.root_control.DocumentControl()
             self.transcript_control = find_transcript_control(self.root_control)
             if not self.transcript_control.Exists(0, 0):
                 return "Transcript control was not found through UI Automation."
@@ -91,6 +98,17 @@ class TranscriptAutomationSession:
         return "\n\n".join(paragraphs)
 
     def _read_transcript_value(self) -> str:
+        try:
+            if self.document_control is not None and self.document_control.Exists(0, 0):
+                text_pattern = self.document_control.GetTextPattern()
+                if text_pattern and text_pattern.DocumentRange:
+                    document_text = text_pattern.DocumentRange.GetText(-1)
+                    transcript_text = extract_transcript_from_document_text(document_text)
+                    if transcript_text:
+                        return transcript_text
+        except Exception:
+            pass
+
         try:
             value_pattern = self.transcript_control.GetValuePattern()
             if value_pattern and value_pattern.Value:
@@ -286,34 +304,32 @@ def iter_controls_depth_first(control):
 
 
 def find_transcript_control(root_control):
-    candidates = []
+    direct_group = root_control.GroupControl(Name="Transcript")
+    if direct_group.Exists(0, 0):
+        return direct_group
+
+    direct_control = root_control.Control(Name="Transcript")
+    if direct_control.Exists(0, 0):
+        return direct_control
+
+    transcription_container = root_control.Control(AutomationId="transcription-container")
+    if transcription_container.Exists(0, 0):
+        nested_group = transcription_container.GroupControl(Name="Transcript")
+        if nested_group.Exists(0, 0):
+            return nested_group
+        return transcription_container
+
     for control in iter_controls_depth_first(root_control):
         try:
-            name = (control.Name or "").strip()
             automation_id = (control.AutomationId or "").strip()
-            control_type = (control.ControlTypeName or "").strip()
         except Exception:
-            continue
-
-        if automation_id == "transcription-container":
-            candidates.append((4, control))
-            continue
-        if name == "Transcript":
-            score = 3
-            if control_type in {"EditControl", "DocumentControl", "GroupControl"}:
-                score = 5
-            candidates.append((score, control))
             continue
         if automation_id.startswith(PARAGRAPH_ID_PREFIX):
             parent = getattr(control, "GetParentControl", lambda: None)()
             if parent is not None:
-                candidates.append((2, parent))
+                return parent
 
-    if not candidates:
-        return root_control.Control(Name="Transcript")
-
-    candidates.sort(key=lambda item: item[0], reverse=True)
-    return candidates[0][1]
+    return root_control.Control(Name="Transcript")
 
 
 def normalize_transcript_paragraph(raw_paragraph: str) -> str:
@@ -354,6 +370,24 @@ def parse_transcript_value(raw_text: str) -> list[str]:
 
     flush_current()
     return paragraphs
+
+
+def extract_transcript_from_document_text(raw_text: str) -> str:
+    if not raw_text:
+        return ""
+
+    matches = list(SPEAKER_BLOCK_PATTERN.finditer(raw_text))
+    if not matches:
+        return ""
+
+    paragraphs: list[str] = []
+    for index, match in enumerate(matches):
+        content_start = match.end()
+        content_end = matches[index + 1].start() if index + 1 < len(matches) else len(raw_text)
+        paragraph = normalize_transcript_paragraph(raw_text[content_start:content_end])
+        if paragraph:
+            paragraphs.append(paragraph)
+    return "\n\n".join(paragraphs)
 
 
 def extract_transcript_text(target: TargetWindow) -> str:
