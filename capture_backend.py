@@ -31,7 +31,7 @@ TIMESTAMP_PREFIX_PATTERN = re.compile(
     re.IGNORECASE,
 )
 SPEAKER_BLOCK_PATTERN = re.compile(
-    r"Speaker\s+\d+\s+(?:(?:\d+\s+(?:hours?|minutes?|seconds?))\s+)+",
+    r"(Speaker\s+\d+)\s+((?:\d+\s+(?:hours?|minutes?|seconds?))(?:\s+\d+\s+(?:hours?|minutes?|seconds?))*)\s+",
     re.IGNORECASE,
 )
 SPEAKER_LINE_PATTERN = re.compile(r"^speaker\s+\d+\s*$", re.IGNORECASE)
@@ -91,35 +91,37 @@ class TranscriptAutomationSession:
             if not self.transcript_control.Exists(0, 0):
                 return "Transcript control was not found through UI Automation."
 
-        raw_text = self._read_transcript_value()
-        paragraphs = parse_transcript_value(raw_text)
+        paragraphs = self._read_transcript_paragraphs()
         if not paragraphs:
             return "(No text detected yet.)"
         return "\n\n".join(paragraphs)
 
-    def _read_transcript_value(self) -> str:
+    def _read_transcript_paragraphs(self) -> list[str]:
         try:
             if self.document_control is not None and self.document_control.Exists(0, 0):
                 text_pattern = self.document_control.GetTextPattern()
                 if text_pattern and text_pattern.DocumentRange:
                     document_text = text_pattern.DocumentRange.GetText(-1)
-                    transcript_text = extract_transcript_from_document_text(document_text)
-                    if transcript_text:
-                        return transcript_text
+                    paragraphs = extract_transcript_paragraphs_from_document_text(
+                        document_text,
+                        speaker_labels=extract_speaker_labels_from_transcript(self.transcript_control),
+                    )
+                    if paragraphs:
+                        return paragraphs
         except Exception:
             pass
 
         try:
             value_pattern = self.transcript_control.GetValuePattern()
             if value_pattern and value_pattern.Value:
-                return value_pattern.Value
+                return parse_transcript_value(value_pattern.Value)
         except Exception:
             pass
 
         try:
             text_pattern = self.transcript_control.GetTextPattern()
             if text_pattern and text_pattern.DocumentRange:
-                return text_pattern.DocumentRange.GetText(-1)
+                return parse_transcript_value(text_pattern.DocumentRange.GetText(-1))
         except Exception:
             pass
 
@@ -131,7 +133,7 @@ class TranscriptAutomationSession:
             paragraph = normalize_transcript_paragraph(extract_text_controls(child))
             if paragraph:
                 paragraphs.append(paragraph)
-        return "\n\n".join(paragraphs)
+        return paragraphs
 
 
 def get_root_hwnd(hwnd: int) -> int:
@@ -372,13 +374,39 @@ def parse_transcript_value(raw_text: str) -> list[str]:
     return paragraphs
 
 
-def extract_transcript_from_document_text(raw_text: str) -> str:
+def extract_speaker_labels_from_transcript(transcript_control) -> list[str]:
+    labels: list[str] = []
+    try:
+        children = transcript_control.GetChildren()
+    except Exception:
+        return labels
+
+    for child in children:
+        automation_id = (child.AutomationId or "").strip()
+        if not automation_id.startswith(PARAGRAPH_ID_PREFIX):
+            continue
+        label = ""
+        try:
+            outer_children = child.GetChildren()
+            if outer_children:
+                inner_children = outer_children[0].GetChildren()
+                if inner_children and inner_children[0].ControlTypeName == "ButtonControl":
+                    candidate = (inner_children[0].Name or "").strip()
+                    if candidate.startswith("Speaker "):
+                        label = candidate
+        except Exception:
+            label = ""
+        labels.append(label)
+    return labels
+
+
+def extract_transcript_paragraphs_from_document_text(raw_text: str, speaker_labels: list[str] | None = None) -> list[str]:
     if not raw_text:
-        return ""
+        return []
 
     matches = list(SPEAKER_BLOCK_PATTERN.finditer(raw_text))
     if not matches:
-        return ""
+        return []
 
     paragraphs: list[str] = []
     for index, match in enumerate(matches):
@@ -386,8 +414,13 @@ def extract_transcript_from_document_text(raw_text: str) -> str:
         content_end = matches[index + 1].start() if index + 1 < len(matches) else len(raw_text)
         paragraph = normalize_transcript_paragraph(raw_text[content_start:content_end])
         if paragraph:
-            paragraphs.append(paragraph)
-    return "\n\n".join(paragraphs)
+            speaker = ""
+            if speaker_labels and index < len(speaker_labels):
+                speaker = speaker_labels[index].strip()
+            if not speaker:
+                speaker = match.group(1).strip()
+            paragraphs.append(f"{speaker}\n{paragraph}")
+    return paragraphs
 
 
 def extract_transcript_text(target: TargetWindow) -> str:

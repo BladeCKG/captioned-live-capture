@@ -17,6 +17,7 @@ from text_processing import split_paragraphs
 
 
 DEFAULT_INTERVAL_SECONDS = 0.3
+PARAGRAPH_SEPARATOR = "\n\n"
 
 
 class CaptureApp(tk.Tk):
@@ -214,14 +215,14 @@ class CaptureApp(tk.Tk):
         if prefix_len == 0:
             self.text.delete("1.0", tk.END)
             if new_paragraphs:
-                self.text.insert("1.0", "\n\n".join(new_paragraphs))
+                self.text.insert("1.0", PARAGRAPH_SEPARATOR.join(new_paragraphs))
         else:
             start_index = self._paragraph_start_index(prefix_len)
             self.text.delete(start_index, tk.END)
-            suffix_text = "\n\n".join(new_paragraphs[prefix_len:])
+            suffix_text = PARAGRAPH_SEPARATOR.join(new_paragraphs[prefix_len:])
             if suffix_text:
                 if prefix_len > 0:
-                    self.text.insert(start_index, "\n\n" + suffix_text)
+                    self.text.insert(start_index, PARAGRAPH_SEPARATOR + suffix_text)
                 else:
                     self.text.insert(start_index, suffix_text)
 
@@ -233,7 +234,7 @@ class CaptureApp(tk.Tk):
         for index, paragraph in enumerate(self.displayed_paragraphs[:paragraph_index]):
             char_offset += len(paragraph)
             if index < paragraph_index - 1:
-                char_offset += 2
+                char_offset += len(PARAGRAPH_SEPARATOR)
         return f"1.0+{char_offset}c"
 
     def _maybe_autoscroll(self, force: bool = False) -> None:
