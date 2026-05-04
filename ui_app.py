@@ -5,6 +5,13 @@ import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import messagebox, ttk
 
+from chrome_live_caption import (
+    LIVE_CAPTION_CLASS,
+    LIVE_CAPTION_PROCESS_NAME,
+    LIVE_CAPTION_WINDOW_NAME,
+    is_live_caption_target,
+    merge_live_caption_history,
+)
 from capture_backend import (
     DEFAULT_CLASS,
     DEFAULT_PROCESS_NAME,
@@ -18,6 +25,8 @@ from text_processing import split_paragraphs
 
 DEFAULT_INTERVAL_SECONDS = 0.3
 PARAGRAPH_SEPARATOR = "\n\n"
+SOURCE_CAPTIONED = "captioned"
+SOURCE_LIVE_CAPTION = "live_caption"
 
 
 class CaptureApp(tk.Tk):
@@ -37,6 +46,7 @@ class CaptureApp(tk.Tk):
         self.process_var = tk.StringVar(value=initial_target.process_name)
         self.window_name_var = tk.StringVar(value=initial_target.window_name)
         self.interval_var = tk.StringVar(value=str(interval_seconds))
+        self.source_var = tk.StringVar(value=self._detect_source(initial_target))
         self.autoscroll_var = tk.BooleanVar(value=True)
         self.always_on_top_var = tk.BooleanVar(value=False)
         self.auto_copy_var = tk.BooleanVar(value=False)
@@ -56,6 +66,24 @@ class CaptureApp(tk.Tk):
 
         button_row = ttk.Frame(root)
         button_row.pack(fill=tk.X, pady=(0, 8))
+
+        source_row = ttk.Frame(root)
+        source_row.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(source_row, text="Source").pack(side=tk.LEFT)
+        ttk.Radiobutton(
+            source_row,
+            text="Caption.Ed",
+            value=SOURCE_CAPTIONED,
+            variable=self.source_var,
+            command=self._apply_source_preset,
+        ).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Radiobutton(
+            source_row,
+            text="Chrome Live Caption",
+            value=SOURCE_LIVE_CAPTION,
+            variable=self.source_var,
+            command=self._apply_source_preset,
+        ).pack(side=tk.LEFT, padx=(8, 0))
 
         self.start_button = ttk.Button(button_row, text="Start", command=self._start)
         self.start_button.pack(side=tk.LEFT)
@@ -94,6 +122,7 @@ class CaptureApp(tk.Tk):
         self.text.configure(yscrollcommand=scrollbar.set)
         self.text.tag_configure("persistent_selection", background="#2f6fed", foreground="#ffffff")
         self.text.bind("<ButtonRelease-1>", self._set_pointer_from_click, add="+")
+        self._apply_source_preset()
 
     def _maximize(self) -> None:
         try:
@@ -115,6 +144,7 @@ class CaptureApp(tk.Tk):
             return None
 
         self.interval_seconds = interval
+        self._apply_source_preset(update_hwnd=False)
         return TargetWindow(
             hwnd=hwnd,
             expected_class=self.class_var.get().strip(),
@@ -122,11 +152,38 @@ class CaptureApp(tk.Tk):
             window_name=self.window_name_var.get().strip(),
         )
 
+    def _detect_source(self, target: TargetWindow) -> str:
+        if is_live_caption_target(target):
+            return SOURCE_LIVE_CAPTION
+        return SOURCE_CAPTIONED
+
+    def _apply_source_preset(self, update_hwnd: bool = True) -> None:
+        if self.source_var.get() == SOURCE_LIVE_CAPTION:
+            self.class_var.set(LIVE_CAPTION_CLASS)
+            self.process_var.set(LIVE_CAPTION_PROCESS_NAME)
+            self.window_name_var.set(LIVE_CAPTION_WINDOW_NAME)
+        else:
+            self.class_var.set(DEFAULT_CLASS)
+            self.process_var.set(DEFAULT_PROCESS_NAME)
+            self.window_name_var.set(DEFAULT_WINDOW_NAME)
+        if update_hwnd:
+            self.hwnd_var.set("")
+        self._reset_display_state()
+
+    def _reset_display_state(self) -> None:
+        self.displayed_paragraphs = []
+        self.pointer_active = False
+        self.pointer_offset = None
+        self.text.delete("1.0", tk.END)
+        self.text.tag_remove(tk.SEL, "1.0", tk.END)
+        self.text.tag_remove("persistent_selection", "1.0", tk.END)
+
     def _start(self) -> None:
         target = self._read_target()
         if target is None:
             return
         self.target = target
+        self._reset_display_state()
         self.running = True
         self.start_button.configure(state=tk.DISABLED)
         self.stop_button.configure(state=tk.NORMAL)
@@ -192,7 +249,10 @@ class CaptureApp(tk.Tk):
             self.status_var.set(f"No new text at {time.strftime('%H:%M:%S')}")
             return
 
-        changed = self._apply_transcript_update(new_paragraphs)
+        if is_live_caption_target(self.target):
+            changed = self._apply_live_caption_update(new_paragraphs)
+        else:
+            changed = self._apply_transcript_update(new_paragraphs)
         if not changed:
             self._restore_pointer_selection()
             self.status_var.set(f"No new text at {time.strftime('%H:%M:%S')}")
@@ -227,6 +287,35 @@ class CaptureApp(tk.Tk):
                     self.text.insert(start_index, suffix_text)
 
         self.displayed_paragraphs = list(new_paragraphs)
+        return True
+
+    def _apply_live_caption_update(self, new_paragraphs: list[str]) -> bool:
+        merged_paragraphs = merge_live_caption_history(self.displayed_paragraphs, new_paragraphs)
+        if merged_paragraphs == self.displayed_paragraphs:
+            return False
+
+        start_index = self._paragraph_start_index(len(self.displayed_paragraphs))
+        suffix_text = PARAGRAPH_SEPARATOR.join(merged_paragraphs[len(self.displayed_paragraphs):])
+        if len(merged_paragraphs) == 0:
+            return False
+        if len(self.displayed_paragraphs) == 0:
+            self.text.delete("1.0", tk.END)
+            self.text.insert("1.0", PARAGRAPH_SEPARATOR.join(merged_paragraphs))
+        elif merged_paragraphs[:-1] == self.displayed_paragraphs[:-1] and merged_paragraphs[-1] != self.displayed_paragraphs[-1]:
+            start_index = self._paragraph_start_index(len(self.displayed_paragraphs) - 1)
+            self.text.delete(start_index, tk.END)
+            replacement = PARAGRAPH_SEPARATOR.join(merged_paragraphs[len(self.displayed_paragraphs) - 1 :])
+            if len(self.displayed_paragraphs) > 1:
+                self.text.insert(start_index, PARAGRAPH_SEPARATOR + replacement)
+            else:
+                self.text.insert(start_index, replacement)
+        elif suffix_text:
+            self.text.insert(tk.END, PARAGRAPH_SEPARATOR + suffix_text)
+        else:
+            self.text.delete("1.0", tk.END)
+            self.text.insert("1.0", PARAGRAPH_SEPARATOR.join(merged_paragraphs))
+
+        self.displayed_paragraphs = merged_paragraphs
         return True
 
     def _paragraph_start_index(self, paragraph_index: int) -> str:

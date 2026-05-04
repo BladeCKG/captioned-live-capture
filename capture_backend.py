@@ -1,6 +1,13 @@
 import re
 import threading
 from dataclasses import dataclass
+from chrome_live_caption import (
+    LIVE_CAPTION_CLASS,
+    LIVE_CAPTION_PROCESS_NAME,
+    LIVE_CAPTION_WINDOW_NAME,
+    extract_live_caption_paragraphs,
+    is_live_caption_target,
+)
 
 try:
     import uiautomation as auto
@@ -84,6 +91,16 @@ class TranscriptAutomationSession:
         if refresh_error:
             return refresh_error
 
+        if is_live_caption_target(self.target):
+            paragraphs = extract_live_caption_paragraphs(
+                self.root_control,
+                find_first_control,
+                normalize_transcript_paragraph,
+            )
+            if not paragraphs:
+                return "(No text detected yet.)"
+            return "\n\n".join(paragraphs)
+
         if not self.transcript_control.Exists(0, 0):
             self.root_control = auto.ControlFromHandle(self.root_hwnd)
             self.document_control = self.root_control.DocumentControl()
@@ -135,7 +152,6 @@ class TranscriptAutomationSession:
                 paragraphs.append(paragraph)
         return paragraphs
 
-
 def get_root_hwnd(hwnd: int) -> int:
     if win32gui is None:
         return hwnd
@@ -166,12 +182,17 @@ def get_process_name(hwnd: int) -> str:
         return ""
 
 
-def find_target_hwnd(process_name: str = DEFAULT_PROCESS_NAME, class_name: str = DEFAULT_CLASS) -> int | None:
+def find_target_hwnd(
+    process_name: str = DEFAULT_PROCESS_NAME,
+    class_name: str = DEFAULT_CLASS,
+    window_name: str = DEFAULT_WINDOW_NAME,
+) -> int | None:
     if win32gui is None:
         return None
 
     matches: list[tuple[int, int, int]] = []
     wanted_process = process_name.casefold()
+    wanted_window = window_name.strip()
 
     def consider(hwnd: int) -> None:
         if not win32gui.IsWindow(hwnd):
@@ -179,6 +200,15 @@ def find_target_hwnd(process_name: str = DEFAULT_PROCESS_NAME, class_name: str =
         try:
             if win32gui.GetClassName(hwnd) != class_name:
                 return
+            title = win32gui.GetWindowText(hwnd)
+            root_title = ""
+            if wanted_window:
+                try:
+                    root_title = win32gui.GetWindowText(get_root_hwnd(hwnd))
+                except Exception:
+                    root_title = ""
+                if title != wanted_window and root_title != wanted_window:
+                    return
             if wanted_process and get_process_name(hwnd).casefold() != wanted_process:
                 return
             left, top, right, bottom = win32gui.GetWindowRect(hwnd)
@@ -194,9 +224,9 @@ def find_target_hwnd(process_name: str = DEFAULT_PROCESS_NAME, class_name: str =
 
     def visit_top_level(hwnd: int, _: object) -> bool:
         try:
+            consider(hwnd)
             if wanted_process and get_process_name(hwnd).casefold() != wanted_process:
                 return True
-            consider(hwnd)
             win32gui.EnumChildWindows(hwnd, visit_child, None)
         except Exception:
             return True
@@ -212,7 +242,7 @@ def find_target_hwnd(process_name: str = DEFAULT_PROCESS_NAME, class_name: str =
 def resolve_hwnd(target: TargetWindow) -> int | None:
     if target.hwnd and win32gui is not None and win32gui.IsWindow(target.hwnd):
         return target.hwnd
-    return find_target_hwnd(target.process_name, target.expected_class)
+    return find_target_hwnd(target.process_name, target.expected_class, target.window_name)
 
 
 def describe_window(hwnd: int) -> str:
@@ -303,6 +333,16 @@ def iter_controls_depth_first(control):
             yield from iter_controls_depth_first(child)
     except Exception:
         return
+
+
+def find_first_control(control, predicate):
+    for node in iter_controls_depth_first(control):
+        try:
+            if predicate(node):
+                return node
+        except Exception:
+            continue
+    return None
 
 
 def find_transcript_control(root_control):
