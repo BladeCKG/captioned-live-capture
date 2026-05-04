@@ -415,12 +415,18 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    default_target = TargetWindow(
+        hwnd=None,
+        expected_class=LIVE_CAPTION_CLASS,
+        process_name=LIVE_CAPTION_PROCESS_NAME,
+        window_name=LIVE_CAPTION_WINDOW_NAME,
+    )
     app = CaptureApp(
         initial_target=TargetWindow(
-            hwnd=args.hwnd,
-            expected_class=args.class_name,
-            process_name=args.process_name,
-            window_name=args.window_name,
+            hwnd=args.hwnd if args.hwnd is not None else default_target.hwnd,
+            expected_class=args.class_name if args.class_name != DEFAULT_CLASS else default_target.expected_class,
+            process_name=args.process_name if args.process_name != DEFAULT_PROCESS_NAME else default_target.process_name,
+            window_name=args.window_name if args.window_name != DEFAULT_WINDOW_NAME else default_target.window_name,
         ),
         interval_seconds=args.interval,
     )
