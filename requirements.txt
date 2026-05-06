@@ -1,7 +1,4 @@
 pywin32>=306
 psutil>=5.9.0
-rapidfuzz>=3.9.0
-lingua-language-detector>=2.1.1
-wordfreq>=3.1.1
 uiautomation>=2.0.29
 comtypes>=1.4.4
