@@ -119,9 +119,10 @@ class TranscriptAutomationSession:
                 text_pattern = self.document_control.GetTextPattern()
                 if text_pattern and text_pattern.DocumentRange:
                     document_text = text_pattern.DocumentRange.GetText(-1)
+                    paragraph_metadata = extract_transcript_paragraph_metadata(self.transcript_control)
                     paragraphs = extract_transcript_paragraphs_from_document_text(
                         document_text,
-                        speaker_labels=extract_speaker_labels_from_transcript(self.transcript_control),
+                        paragraph_metadata=paragraph_metadata,
                     )
                     if paragraphs:
                         return paragraphs
@@ -414,18 +415,19 @@ def parse_transcript_value(raw_text: str) -> list[str]:
     return paragraphs
 
 
-def extract_speaker_labels_from_transcript(transcript_control) -> list[str]:
-    labels: list[str] = []
+def extract_transcript_paragraph_metadata(transcript_control) -> list[tuple[str, str]]:
+    metadata: list[tuple[str, str]] = []
     try:
         children = transcript_control.GetChildren()
     except Exception:
-        return labels
+        return metadata
 
     for child in children:
         automation_id = (child.AutomationId or "").strip()
         if not automation_id.startswith(PARAGRAPH_ID_PREFIX):
             continue
         label = ""
+        paragraph_text = ""
         try:
             outer_children = child.GetChildren()
             if outer_children:
@@ -434,13 +436,18 @@ def extract_speaker_labels_from_transcript(transcript_control) -> list[str]:
                     candidate = (inner_children[0].Name or "").strip()
                     if candidate.startswith("Speaker "):
                         label = candidate
+                paragraph_text = normalize_transcript_paragraph(extract_text_controls(child))
         except Exception:
             label = ""
-        labels.append(label)
-    return labels
+            paragraph_text = ""
+        metadata.append((label, paragraph_text))
+    return metadata
 
 
-def extract_transcript_paragraphs_from_document_text(raw_text: str, speaker_labels: list[str] | None = None) -> list[str]:
+def extract_transcript_paragraphs_from_document_text(
+    raw_text: str,
+    paragraph_metadata: list[tuple[str, str]] | None = None,
+) -> list[str]:
     if not raw_text:
         return []
 
@@ -455,12 +462,32 @@ def extract_transcript_paragraphs_from_document_text(raw_text: str, speaker_labe
         paragraph = normalize_transcript_paragraph(raw_text[content_start:content_end])
         if paragraph:
             speaker = ""
-            if speaker_labels and index < len(speaker_labels):
-                speaker = speaker_labels[index].strip()
+            structural_text = ""
+            if paragraph_metadata and index < len(paragraph_metadata):
+                speaker, structural_text = paragraph_metadata[index]
+                speaker = speaker.strip()
             if not speaker:
                 speaker = match.group(1).strip()
+            if structural_text:
+                paragraph = choose_structural_paragraph_text(paragraph, structural_text)
             paragraphs.append(f"{speaker}\n{paragraph}")
     return paragraphs
+
+
+def choose_structural_paragraph_text(document_text: str, structural_text: str) -> str:
+    document_norm = normalized_compare_text(document_text)
+    structural_norm = normalized_compare_text(structural_text)
+    if not structural_norm:
+        return document_text
+    if document_norm.startswith(structural_norm):
+        return structural_text
+    if structural_norm in document_norm:
+        return structural_text
+    return document_text
+
+
+def normalized_compare_text(text: str) -> str:
+    return " ".join(text.casefold().split())
 
 
 def extract_transcript_text(target: TargetWindow) -> str:
