@@ -1,10 +1,11 @@
 import difflib
 import re
+import sys
 
 
 LIVE_CAPTION_WINDOW_NAME = "Live Caption"
-LIVE_CAPTION_CLASS = "Chrome_WidgetWin_1"
-LIVE_CAPTION_PROCESS_NAME = "chrome.exe"
+LIVE_CAPTION_CLASS = "Chrome_WidgetWin_1" if sys.platform.startswith("win") else ""
+LIVE_CAPTION_PROCESS_NAME = "chrome.exe" if sys.platform.startswith("win") else "Google Chrome"
 WORD_PATTERN = re.compile(r"\S+")
 STRIP_PUNCTUATION = ".,!?;:'\"()[]{}<>"
 LIVE_CAPTION_TAIL_WINDOW_WORDS = 140
@@ -15,12 +16,12 @@ def is_live_caption_target(target) -> bool:
     window_name = (target.window_name or "").strip()
     expected_class = (target.expected_class or "").strip()
     process_name = (target.process_name or "").strip().casefold()
-    if window_name == LIVE_CAPTION_WINDOW_NAME and expected_class == LIVE_CAPTION_CLASS:
+    if window_name == LIVE_CAPTION_WINDOW_NAME and (
+        not LIVE_CAPTION_CLASS or expected_class == LIVE_CAPTION_CLASS
+    ):
         return True
-    return (
-        expected_class == LIVE_CAPTION_CLASS
-        and process_name in {"", LIVE_CAPTION_PROCESS_NAME}
-    )
+    class_matches = not LIVE_CAPTION_CLASS or expected_class == LIVE_CAPTION_CLASS
+    return class_matches and process_name in {"", LIVE_CAPTION_PROCESS_NAME.casefold()}
 
 
 def find_live_caption_document(root_control, find_first_control):

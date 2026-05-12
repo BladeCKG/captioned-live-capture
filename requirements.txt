@@ -1,4 +1,6 @@
-pywin32>=306
 psutil>=5.9.0
-uiautomation>=2.0.29
-comtypes>=1.4.4
+pywin32>=306; platform_system == "Windows"
+uiautomation>=2.0.29; platform_system == "Windows"
+comtypes>=1.4.4; platform_system == "Windows"
+pyobjc-framework-ApplicationServices>=10.3; platform_system == "Darwin"
+pyobjc-framework-Quartz>=10.3; platform_system == "Darwin"

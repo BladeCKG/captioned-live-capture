@@ -1,3 +1,4 @@
+import platform
 import re
 import threading
 from dataclasses import dataclass
@@ -7,6 +8,7 @@ from chrome_live_caption import (
     LIVE_CAPTION_WINDOW_NAME,
     extract_live_caption_paragraphs,
     is_live_caption_target,
+    split_live_caption_paragraphs,
 )
 
 try:
@@ -28,9 +30,72 @@ except ImportError:
     win32gui = None
     win32process = None
 
+try:
+    from ApplicationServices import (
+        AXIsProcessTrusted,
+        AXUIElementCopyAttributeNames,
+        AXUIElementCopyElementAtPosition,
+        AXUIElementCopyAttributeValue,
+        AXUIElementCreateApplication,
+        AXUIElementCreateSystemWide,
+        kAXChildrenAttribute,
+        kAXDescriptionAttribute,
+        kAXParentAttribute,
+        kAXRoleAttribute,
+        kAXStaticTextRole,
+        kAXTitleAttribute,
+        kAXValueAttribute,
+        kAXWindowRole,
+        kAXWindowsAttribute,
+    )
+except ImportError:
+    AXIsProcessTrusted = None
+    AXUIElementCopyAttributeNames = None
+    AXUIElementCopyElementAtPosition = None
+    AXUIElementCopyAttributeValue = None
+    AXUIElementCreateApplication = None
+    AXUIElementCreateSystemWide = None
+    kAXChildrenAttribute = None
+    kAXDescriptionAttribute = None
+    kAXParentAttribute = None
+    kAXRoleAttribute = None
+    kAXStaticTextRole = None
+    kAXTitleAttribute = None
+    kAXValueAttribute = None
+    kAXWindowRole = None
+    kAXWindowsAttribute = None
 
-DEFAULT_CLASS = "Chrome_RenderWidgetHostHWND"
-DEFAULT_PROCESS_NAME = "Caption.Ed.exe"
+try:
+    from Quartz import (
+        kCGNullWindowID,
+        kCGWindowBounds,
+        kCGWindowListExcludeDesktopElements,
+        kCGWindowListOptionAll,
+        kCGWindowListOptionOnScreenOnly,
+        kCGWindowName,
+        kCGWindowNumber,
+        kCGWindowOwnerName,
+        kCGWindowOwnerPID,
+        CGWindowListCopyWindowInfo,
+    )
+except ImportError:
+    kCGNullWindowID = None
+    kCGWindowBounds = None
+    kCGWindowListExcludeDesktopElements = None
+    kCGWindowListOptionAll = None
+    kCGWindowListOptionOnScreenOnly = None
+    kCGWindowName = None
+    kCGWindowNumber = None
+    kCGWindowOwnerName = None
+    kCGWindowOwnerPID = None
+    CGWindowListCopyWindowInfo = None
+
+
+IS_WINDOWS = platform.system() == "Windows"
+IS_MACOS = platform.system() == "Darwin"
+
+DEFAULT_CLASS = "Chrome_RenderWidgetHostHWND" if IS_WINDOWS else ""
+DEFAULT_PROCESS_NAME = "Caption.Ed.exe" if IS_WINDOWS else "Caption.Ed"
 DEFAULT_WINDOW_NAME = "Caption.Ed"
 PARAGRAPH_ID_PREFIX = "paragraph-"
 TIMESTAMP_PREFIX_PATTERN = re.compile(
@@ -153,10 +218,257 @@ class TranscriptAutomationSession:
                 paragraphs.append(paragraph)
         return paragraphs
 
+
+class MacAccessibilitySession:
+    def __init__(self, target: TargetWindow):
+        self.target = target
+        self.window_info: dict | None = None
+        self.app_element = None
+        self.window_element = None
+
+    def refresh(self) -> str | None:
+        window_info = find_macos_window_info(self.target)
+        if window_info is None:
+            return (
+                f"Window not found.\n"
+                f"Process: {self.target.process_name or '(any)'}\n"
+                f"Window: {self.target.window_name or '(any)'}"
+            )
+
+        pid = int(window_info.get(kCGWindowOwnerPID, 0) or 0)
+        if pid <= 0:
+            return "Target window did not expose a valid process id."
+
+        if self.window_info == window_info and self.window_element is not None:
+            return None
+
+        self.window_info = window_info
+        self.app_element = AXUIElementCreateApplication(pid)
+        self.window_element = find_macos_ax_window(self.app_element, window_info, self.target)
+        if self.window_element is None:
+            return (
+                "Transcript window was not found through macOS Accessibility.\n"
+                "Make sure Accessibility permission is granted to this app."
+            )
+        return None
+
+    def extract_text(self) -> str:
+        refresh_error = self.refresh()
+        if refresh_error:
+            return refresh_error
+
+        lines = extract_macos_accessibility_lines(self.window_element)
+        if not lines:
+            return "(No text detected yet.)"
+
+        if is_live_caption_target(self.target):
+            paragraphs = split_live_caption_paragraphs(" ".join(lines))
+        else:
+            parsed = parse_transcript_value("\n".join(lines))
+            paragraphs = parsed or split_generic_macos_paragraphs(lines)
+
+        if not paragraphs:
+            return "(No text detected yet.)"
+        return "\n\n".join(paragraphs)
+
 def get_root_hwnd(hwnd: int) -> int:
     if win32gui is None:
         return hwnd
     return win32gui.GetAncestor(hwnd, win32con.GA_ROOT)
+
+
+def get_macos_window_list() -> list[dict]:
+    if CGWindowListCopyWindowInfo is None:
+        return []
+    options = (kCGWindowListOptionOnScreenOnly or 0) | (kCGWindowListExcludeDesktopElements or 0)
+    try:
+        windows = CGWindowListCopyWindowInfo(options, kCGNullWindowID or 0) or []
+    except Exception:
+        windows = []
+    return list(windows)
+
+
+def macos_window_area(window_info: dict) -> int:
+    bounds = window_info.get(kCGWindowBounds, {}) or {}
+    width = int(bounds.get("Width", 0) or 0)
+    height = int(bounds.get("Height", 0) or 0)
+    return max(0, width) * max(0, height)
+
+
+def find_macos_window_info(target: TargetWindow) -> dict | None:
+    matches: list[tuple[int, int, dict]] = []
+    wanted_process = normalized_macos_process_name(target.process_name)
+    wanted_window = (target.window_name or "").strip()
+
+    for window_info in get_macos_window_list():
+        owner_name = str(window_info.get(kCGWindowOwnerName, "") or "").strip()
+        window_name = str(window_info.get(kCGWindowName, "") or "").strip()
+        if wanted_process and normalized_macos_process_name(owner_name) != wanted_process:
+            continue
+        if wanted_window and window_name != wanted_window:
+            continue
+        area = macos_window_area(window_info)
+        if area <= 0:
+            continue
+        title_score = 1 if window_name else 0
+        matches.append((title_score, area, window_info))
+
+    if not matches:
+        return None
+    matches.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return matches[0][2]
+
+
+def normalized_macos_process_name(name: str | None) -> str:
+    text = (name or "").strip().casefold()
+    return re.sub(r"[^a-z0-9]+", "", text)
+
+
+def ax_copy_attribute(element, attribute: str):
+    if AXUIElementCopyAttributeValue is None:
+        return None
+    try:
+        _, value = AXUIElementCopyAttributeValue(element, attribute, None)
+        return value
+    except TypeError:
+        try:
+            result = AXUIElementCopyAttributeValue(element, attribute)
+            if isinstance(result, tuple) and len(result) >= 2:
+                return result[1]
+            return result
+        except Exception:
+            return None
+    except Exception:
+        return None
+
+
+def ax_copy_attribute_names(element) -> list[str]:
+    if AXUIElementCopyAttributeNames is None:
+        return []
+    try:
+        _, names = AXUIElementCopyAttributeNames(element, None)
+        return list(names or [])
+    except TypeError:
+        try:
+            result = AXUIElementCopyAttributeNames(element)
+            if isinstance(result, tuple) and len(result) >= 2:
+                return list(result[1] or [])
+            return list(result or [])
+        except Exception:
+            return []
+    except Exception:
+        return []
+
+
+def find_macos_ax_window(app_element, window_info: dict, target: TargetWindow):
+    positioned_window = find_macos_ax_window_by_position(window_info)
+    if positioned_window is not None:
+        return positioned_window
+
+    windows = ax_copy_attribute(app_element, kAXWindowsAttribute) or []
+    wanted_title = str(window_info.get(kCGWindowName, "") or "").strip()
+    fallback = None
+    for window in windows:
+        title = str(ax_copy_attribute(window, kAXTitleAttribute) or "").strip()
+        if fallback is None:
+            fallback = window
+        if wanted_title and title == wanted_title:
+            return window
+    return fallback
+
+
+def find_macos_ax_window_by_position(window_info: dict):
+    if AXUIElementCreateSystemWide is None or AXUIElementCopyElementAtPosition is None:
+        return None
+    bounds = window_info.get(kCGWindowBounds, {}) or {}
+    width = float(bounds.get("Width", 0) or 0)
+    height = float(bounds.get("Height", 0) or 0)
+    if width <= 0 or height <= 0:
+        return None
+    center_x = float(bounds.get("X", 0) or 0) + (width / 2.0)
+    center_y = float(bounds.get("Y", 0) or 0) + (height / 2.0)
+    system_wide = AXUIElementCreateSystemWide()
+    try:
+        result = AXUIElementCopyElementAtPosition(system_wide, center_x, center_y, None)
+    except TypeError:
+        try:
+            result = AXUIElementCopyElementAtPosition(system_wide, center_x, center_y)
+        except Exception:
+            return None
+    except Exception:
+        return None
+
+    element = unpack_ax_result(result)
+    if element is None:
+        return None
+    return ascend_to_ax_window(element)
+
+
+def unpack_ax_result(result):
+    if result is None:
+        return None
+    if isinstance(result, tuple):
+        if len(result) >= 2:
+            return result[1]
+        if len(result) == 1:
+            return result[0]
+    return result
+
+
+def ascend_to_ax_window(element):
+    node = element
+    visited_ids: set[int] = set()
+    while node is not None:
+        node_id = id(node)
+        if node_id in visited_ids:
+            break
+        visited_ids.add(node_id)
+        role = str(ax_copy_attribute(node, kAXRoleAttribute) or "")
+        if role == (kAXWindowRole or "AXWindow"):
+            return node
+        node = ax_copy_attribute(node, kAXParentAttribute)
+    return element
+
+
+def extract_macos_accessibility_lines(window_element) -> list[str]:
+    lines: list[str] = []
+
+    def walk(node) -> None:
+        role = str(ax_copy_attribute(node, kAXRoleAttribute) or "")
+        children = ax_copy_attribute(node, kAXChildrenAttribute) or []
+
+        if role == kAXStaticTextRole or not children:
+            for attribute in (kAXValueAttribute, kAXTitleAttribute, kAXDescriptionAttribute):
+                value = ax_copy_attribute(node, attribute)
+                if isinstance(value, str):
+                    text = normalize_macos_line(value)
+                    if text and (not lines or lines[-1] != text):
+                        lines.append(text)
+                    break
+
+        for child in children:
+            walk(child)
+
+    walk(window_element)
+    return lines
+
+
+def normalize_macos_line(value: str) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip())
+
+
+def split_generic_macos_paragraphs(lines: list[str]) -> list[str]:
+    paragraphs: list[str] = []
+    current: list[str] = []
+    for line in lines:
+        if not line:
+            continue
+        if current and line == current[-1]:
+            continue
+        current.append(line)
+    if current:
+        paragraphs.append(normalize_transcript_paragraph(" ".join(current)))
+    return [paragraph for paragraph in paragraphs if paragraph]
 
 
 def get_process_path(hwnd: int) -> str:
@@ -270,7 +582,31 @@ def describe_window(hwnd: int) -> str:
     )
 
 
+def describe_macos_window(window_info: dict) -> str:
+    owner_name = str(window_info.get(kCGWindowOwnerName, "") or "(unknown)")
+    window_name = str(window_info.get(kCGWindowName, "") or "(no title)")
+    pid = int(window_info.get(kCGWindowOwnerPID, 0) or 0)
+    bounds = window_info.get(kCGWindowBounds, {}) or {}
+    return (
+        f"Window ID: {window_info.get(kCGWindowNumber, '(unknown)')}\n"
+        f"PID: {pid}\n"
+        f"Owner: {owner_name}\n"
+        f"Title: {window_name}\n"
+        f"Bounds: {bounds.get('X', 0)}, {bounds.get('Y', 0)}, "
+        f"{bounds.get('Width', 0)}, {bounds.get('Height', 0)}"
+    )
+
+
 def describe_target(target: TargetWindow) -> str:
+    if IS_MACOS:
+        window_info = find_macos_window_info(target)
+        if window_info is None:
+            return (
+                f"No matching target window found.\n"
+                f"Process: {target.process_name or '(any)'}\n"
+                f"Window: {target.window_name or '(any)'}"
+            )
+        return describe_macos_window(window_info)
     if win32gui is None:
         return "pywin32 is not installed"
     hwnd = resolve_hwnd(target)
@@ -281,18 +617,29 @@ def describe_target(target: TargetWindow) -> str:
 
 def dependency_error() -> str | None:
     missing = []
-    if win32gui is None:
-        missing.append("pywin32")
-    if auto is None:
-        missing.append("uiautomation")
-    if comtypes is None:
-        missing.append("comtypes")
+    if IS_MACOS:
+        if CGWindowListCopyWindowInfo is None or AXUIElementCreateApplication is None:
+            missing.append("pyobjc-framework-ApplicationServices")
+        elif AXIsProcessTrusted is not None and not AXIsProcessTrusted():
+            return (
+                "Accessibility permission is required on macOS. "
+                "Allow this app or Terminal in System Settings > Privacy & Security > Accessibility."
+            )
+    else:
+        if win32gui is None:
+            missing.append("pywin32")
+        if auto is None:
+            missing.append("uiautomation")
+        if comtypes is None:
+            missing.append("comtypes")
     if missing:
         return "Missing Python packages: " + ", ".join(missing)
     return None
 
 
 def ensure_com_initialized() -> None:
+    if not IS_WINDOWS:
+        return
     if getattr(THREAD_STATE, "com_initialized", False):
         return
     comtypes.CoInitialize()
@@ -300,6 +647,8 @@ def ensure_com_initialized() -> None:
 
 
 def release_com_if_initialized() -> None:
+    if not IS_WINDOWS:
+        return
     if not getattr(THREAD_STATE, "com_initialized", False):
         return
     try:
@@ -494,10 +843,16 @@ def extract_transcript_text(target: TargetWindow) -> str:
     error = dependency_error()
     if error:
         return error
-    ensure_com_initialized()
+    if IS_WINDOWS:
+        ensure_com_initialized()
+        session_type = TranscriptAutomationSession
+    elif IS_MACOS:
+        session_type = MacAccessibilitySession
+    else:
+        return f"Unsupported platform: {platform.system()}"
     session = getattr(THREAD_STATE, "transcript_session", None)
-    if session is None or session.target != target:
-        session = TranscriptAutomationSession(target)
+    if session is None or session.target != target or not isinstance(session, session_type):
+        session = session_type(target)
         THREAD_STATE.transcript_session = session
     return session.extract_text()
 

@@ -13,9 +13,20 @@ $zipPath = Join-Path $releaseDir "$AppName-portable.zip"
 
 Set-Location $root
 
+function Get-PythonCommand {
+    foreach ($candidate in @("py", "python3", "python")) {
+        if (Get-Command $candidate -ErrorAction SilentlyContinue) {
+            return $candidate
+        }
+    }
+    throw "Python was not found in PATH. Install Python and try again."
+}
+
+$pythonCmd = Get-PythonCommand
+
 Write-Host "Installing build requirements..."
 $env:PYTHONIOENCODING = "utf-8"
-py -m pip install -r requirements.txt pyinstaller
+& $pythonCmd -m pip install -r requirements.txt pyinstaller
 
 Write-Host "Cleaning old build outputs..."
 if (Test-Path $buildDir) { Remove-Item -LiteralPath $buildDir -Recurse -Force }
@@ -24,7 +35,7 @@ if (!(Test-Path $releaseDir)) { New-Item -ItemType Directory -Path $releaseDir |
 if (Test-Path $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
 
 Write-Host "Building executable..."
-py -m PyInstaller --noconfirm --clean --windowed --name $AppName capture_text_app.py
+& $pythonCmd -m PyInstaller --noconfirm --clean --windowed --name $AppName capture_text_app.py
 
 if (!(Test-Path $appDistDir)) {
     throw "Build output was not created: $appDistDir"
