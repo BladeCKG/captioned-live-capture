@@ -5,7 +5,7 @@ import re
 import sys
 
 
-LIVE_CAPTION_WINDOW_NAME = "Live Caption"
+LIVE_CAPTION_WINDOW_NAME = "Live Caption" if sys.platform.startswith("win") else ""
 LIVE_CAPTION_CLASS = "Chrome_WidgetWin_1" if sys.platform.startswith("win") else ""
 LIVE_CAPTION_PROCESS_NAME = "chrome.exe" if sys.platform.startswith("win") else "Google Chrome"
 WORD_PATTERN = re.compile(r"\S+")
