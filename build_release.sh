@@ -104,6 +104,14 @@ PYTHONIOENCODING="utf-8" "$VENV_PYTHON" -m PyInstaller \
   --name "$APP_NAME" \
   --hidden-import ApplicationServices \
   --hidden-import Quartz \
+  --hidden-import captioned_windows \
+  --hidden-import captioned_macos \
+  --hidden-import chrome_live_caption_windows \
+  --hidden-import chrome_live_caption_macos \
+  --hidden-import macos_accessibility \
+  --collect-all ApplicationServices \
+  --collect-all Quartz \
+  --collect-all objc \
   capture_text_app.py
 
 if [[ ! -d "$APP_BUNDLE" ]]; then
