@@ -197,6 +197,18 @@ Install Python packages:
 py -m pip install -r requirements.txt
 ```
 
+On macOS, use:
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+macOS also requires Accessibility permission before transcript text can be read. Allow Terminal while running from source, or allow the packaged app when running the built `.app`:
+
+```text
+System Settings > Privacy & Security > Accessibility
+```
+
 ## Run
 
 Run with default Caption.Ed discovery:
@@ -205,10 +217,22 @@ Run with default Caption.Ed discovery:
 py capture_text_app.py
 ```
 
+On macOS:
+
+```bash
+python3 capture_text_app.py
+```
+
 Override process/class/interval if needed:
 
 ```powershell
 py capture_text_app.py --process-name Caption.Ed.exe --class-name Chrome_RenderWidgetHostHWND --interval 0.3
+```
+
+On macOS, Caption.Ed discovery defaults to process `Caption.Ed`. The Caption.Ed window can have an empty macOS window title, so the default does not require a window-name match:
+
+```bash
+python3 capture_text_app.py --process-name Caption.Ed --interval 0.3
 ```
 
 Force a specific window handle if necessary:
@@ -225,10 +249,24 @@ Create the portable Windows build with:
 .\build_release.ps1
 ```
 
+Create the macOS app bundle with:
+
+```bash
+./build_release.sh
+```
+
+The macOS build script creates an isolated build environment automatically. If it finds Homebrew Python without Tk support, it installs the matching `python-tk` package before building.
+
 The build output is:
 
 ```text
 release\CaptionedLiveCapture-portable.zip
+```
+
+On macOS the build output is:
+
+```text
+release/CaptionedLiveCapture-macos.zip
 ```
 
 To use it on another PC:

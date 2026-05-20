@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 import platform
 import re
 import threading
+from collections.abc import Iterable
 from dataclasses import dataclass
 from chrome_live_caption import (
     LIVE_CAPTION_CLASS,
@@ -65,6 +68,18 @@ except ImportError:
     kAXWindowRole = None
     kAXWindowsAttribute = None
 
+MACOS_CHILD_ATTRIBUTES = tuple(
+    attribute
+    for attribute in (
+        kAXChildrenAttribute,
+        "AXChildrenInNavigationOrder",
+        "AXVisibleChildren",
+        "AXRows",
+        "AXContents",
+    )
+    if attribute
+)
+
 try:
     from Quartz import (
         kCGNullWindowID,
@@ -96,7 +111,9 @@ IS_MACOS = platform.system() == "Darwin"
 
 DEFAULT_CLASS = "Chrome_RenderWidgetHostHWND" if IS_WINDOWS else ""
 DEFAULT_PROCESS_NAME = "Caption.Ed.exe" if IS_WINDOWS else "Caption.Ed"
-DEFAULT_WINDOW_NAME = "Caption.Ed"
+DEFAULT_WINDOW_NAME = "Caption.Ed" if IS_WINDOWS else ""
+MACOS_MAX_ACCESSIBILITY_NODES = 1000
+MACOS_MAX_ACCESSIBILITY_DEPTH = 24
 PARAGRAPH_ID_PREFIX = "paragraph-"
 TIMESTAMP_PREFIX_PATTERN = re.compile(
     r"^\s*(?:(?:\d+\s+(?:hours?|minutes?|seconds?))+\s*)+",
@@ -361,10 +378,6 @@ def ax_copy_attribute_names(element) -> list[str]:
 
 
 def find_macos_ax_window(app_element, window_info: dict, target: TargetWindow):
-    positioned_window = find_macos_ax_window_by_position(window_info)
-    if positioned_window is not None:
-        return positioned_window
-
     windows = ax_copy_attribute(app_element, kAXWindowsAttribute) or []
     wanted_title = str(window_info.get(kCGWindowName, "") or "").strip()
     fallback = None
@@ -374,7 +387,10 @@ def find_macos_ax_window(app_element, window_info: dict, target: TargetWindow):
             fallback = window
         if wanted_title and title == wanted_title:
             return window
-    return fallback
+    if fallback is not None:
+        return fallback
+
+    return find_macos_ax_window_by_position(window_info)
 
 
 def find_macos_ax_window_by_position(window_info: dict):
@@ -432,12 +448,22 @@ def ascend_to_ax_window(element):
 
 def extract_macos_accessibility_lines(window_element) -> list[str]:
     lines: list[str] = []
+    visited: set[str] = set()
+    node_count = 0
 
-    def walk(node) -> None:
+    def walk(node, depth: int = 0) -> None:
+        nonlocal node_count
+        if node_count >= MACOS_MAX_ACCESSIBILITY_NODES or depth > MACOS_MAX_ACCESSIBILITY_DEPTH:
+            return
+        node_key = repr(node)
+        if node_key in visited:
+            return
+        visited.add(node_key)
+        node_count += 1
         role = str(ax_copy_attribute(node, kAXRoleAttribute) or "")
-        children = ax_copy_attribute(node, kAXChildrenAttribute) or []
+        children = macos_accessibility_children(node)
 
-        if role == kAXStaticTextRole or not children:
+        if role == kAXStaticTextRole or (not children and role != kAXWindowRole):
             for attribute in (kAXValueAttribute, kAXTitleAttribute, kAXDescriptionAttribute):
                 value = ax_copy_attribute(node, attribute)
                 if isinstance(value, str):
@@ -447,10 +473,26 @@ def extract_macos_accessibility_lines(window_element) -> list[str]:
                     break
 
         for child in children:
-            walk(child)
+            walk(child, depth + 1)
 
     walk(window_element)
     return lines
+
+
+def macos_accessibility_children(node) -> list:
+    children: list = []
+    seen_ids: set[int] = set()
+    for attribute in MACOS_CHILD_ATTRIBUTES:
+        value = ax_copy_attribute(node, attribute)
+        if isinstance(value, (str, bytes)) or not isinstance(value, Iterable):
+            continue
+        for child in value:
+            child_id = id(child)
+            if child_id in seen_ids:
+                continue
+            seen_ids.add(child_id)
+            children.append(child)
+    return children
 
 
 def normalize_macos_line(value: str) -> str:
