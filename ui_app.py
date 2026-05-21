@@ -58,6 +58,7 @@ class CaptureApp(tk.Tk):
         self.pointer_offset: int | None = None
         self.displayed_paragraphs: list[str] = []
         self.autoscroll_token = 0
+        self.accessibility_permission_notice_shown = False
 
         self._build_ui()
         self.after(0, self._maximize)
@@ -242,8 +243,7 @@ class CaptureApp(tk.Tk):
         self.after(0, self._set_text, text)
 
     def _set_text(self, value: str) -> None:
-        if value.startswith("Window not found.") or value.startswith("Window class mismatch.") or value.startswith("Transcript control was not found"):
-            self.status_var.set(value.splitlines()[0])
+        if self._handle_status_message(value):
             return
 
         new_paragraphs = split_paragraphs(value)
@@ -264,6 +264,27 @@ class CaptureApp(tk.Tk):
         self._maybe_autoscroll(force=True)
         self._maybe_auto_copy_selection()
         self.status_var.set(f"Updated at {time.strftime('%H:%M:%S')}")
+
+    def _handle_status_message(self, value: str) -> bool:
+        status_prefixes = (
+            "Window not found.",
+            "Window class mismatch.",
+            "Transcript control was not found",
+            "Missing Python packages:",
+            "Unsupported platform:",
+        )
+        if value.startswith(status_prefixes):
+            self.status_var.set(value.splitlines()[0])
+            return True
+
+        if value.startswith("Accessibility permission is required"):
+            self.status_var.set("Accessibility permission required")
+            if not self.accessibility_permission_notice_shown:
+                self.accessibility_permission_notice_shown = True
+                messagebox.showinfo("Accessibility Permission", value)
+            return True
+
+        return False
 
     def _apply_transcript_update(self, new_paragraphs: list[str]) -> bool:
         if new_paragraphs == self.displayed_paragraphs:

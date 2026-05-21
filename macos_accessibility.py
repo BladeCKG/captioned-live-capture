@@ -9,6 +9,7 @@ from capture_types import TargetWindow
 try:
     from ApplicationServices import (
         AXIsProcessTrusted,
+        AXIsProcessTrustedWithOptions,
         AXUIElementCopyAttributeNames,
         AXUIElementCopyElementAtPosition,
         AXUIElementCopyAttributeValue,
@@ -22,6 +23,7 @@ try:
         kAXRoleAttribute,
         kAXStaticTextRole,
         kAXTitleAttribute,
+        kAXTrustedCheckOptionPrompt,
         kAXValueAttribute,
         kAXValueCGPointType,
         kAXValueCGSizeType,
@@ -30,6 +32,7 @@ try:
     )
 except ImportError:
     AXIsProcessTrusted = None
+    AXIsProcessTrustedWithOptions = None
     AXUIElementCopyAttributeNames = None
     AXUIElementCopyElementAtPosition = None
     AXUIElementCopyAttributeValue = None
@@ -43,6 +46,7 @@ except ImportError:
     kAXRoleAttribute = None
     kAXStaticTextRole = None
     kAXTitleAttribute = None
+    kAXTrustedCheckOptionPrompt = None
     kAXValueAttribute = None
     kAXValueCGPointType = None
     kAXValueCGSizeType = None
@@ -75,6 +79,11 @@ except ImportError:
 
 MAX_ACCESSIBILITY_NODES = 1000
 MAX_ACCESSIBILITY_DEPTH = 24
+ACCESSIBILITY_PERMISSION_MESSAGE = (
+    "Accessibility permission is required on macOS. "
+    "Allow this app or Terminal in System Settings > Privacy & Security > Accessibility, "
+    "then click Capture Once again."
+)
 CHILD_ATTRIBUTES = tuple(
     attribute
     for attribute in (
@@ -102,12 +111,28 @@ class AccessibilityTextRecord:
 def dependency_error() -> str | None:
     if CGWindowListCopyWindowInfo is None or AXUIElementCreateApplication is None:
         return "Missing Python packages: pyobjc-framework-ApplicationServices"
-    if AXIsProcessTrusted is not None and not AXIsProcessTrusted():
-        return (
-            "Accessibility permission is required on macOS. "
-            "Allow this app or Terminal in System Settings > Privacy & Security > Accessibility."
-        )
+    if AXIsProcessTrusted is not None and not request_accessibility_permission():
+        return ACCESSIBILITY_PERMISSION_MESSAGE
     return None
+
+
+def request_accessibility_permission() -> bool:
+    if AXIsProcessTrusted is None:
+        return False
+    try:
+        if AXIsProcessTrusted():
+            return True
+    except Exception:
+        return False
+
+    if AXIsProcessTrustedWithOptions is None:
+        return False
+
+    prompt_key = kAXTrustedCheckOptionPrompt or "AXTrustedCheckOptionPrompt"
+    try:
+        return bool(AXIsProcessTrustedWithOptions({prompt_key: True}))
+    except Exception:
+        return False
 
 
 def get_window_list() -> list[dict]:
