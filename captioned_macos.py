@@ -75,8 +75,8 @@ class MacCaptionedSession:
         return "\n\n".join(paragraphs)
 
 
-def dependency_error() -> str | None:
-    return accessibility_dependency_error()
+def dependency_error(prompt: bool = False) -> str | None:
+    return accessibility_dependency_error(prompt=prompt)
 
 
 def describe_target(target: TargetWindow) -> str:

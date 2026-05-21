@@ -20,6 +20,7 @@ from capture_backend import (
     DEFAULT_WINDOW_NAME,
     TargetWindow,
     capture_window_text,
+    dependency_error,
     describe_target,
 )
 from text_processing import split_paragraphs
@@ -186,6 +187,8 @@ class CaptureApp(tk.Tk):
         if target is None:
             return
         self.target = target
+        if not self._ensure_capture_ready(target, prompt_accessibility=True):
+            return
         self._reset_display_state()
         self.running = True
         self.start_button.configure(state=tk.DISABLED)
@@ -205,6 +208,8 @@ class CaptureApp(tk.Tk):
         if target is None:
             return
         self.target = target
+        if not self._ensure_capture_ready(target, prompt_accessibility=True):
+            return
         threading.Thread(target=self._capture_and_display, daemon=True).start()
 
     def _capture_loop(self) -> None:
@@ -242,6 +247,13 @@ class CaptureApp(tk.Tk):
         text = capture_window_text(self.target)
         self.after(0, self._set_text, text)
 
+    def _ensure_capture_ready(self, target: TargetWindow, prompt_accessibility: bool = False) -> bool:
+        error = dependency_error(target, prompt=prompt_accessibility)
+        if not error:
+            return True
+        self._handle_status_message(error, force_notice=True)
+        return False
+
     def _set_text(self, value: str) -> None:
         if self._handle_status_message(value):
             return
@@ -265,7 +277,7 @@ class CaptureApp(tk.Tk):
         self._maybe_auto_copy_selection()
         self.status_var.set(f"Updated at {time.strftime('%H:%M:%S')}")
 
-    def _handle_status_message(self, value: str) -> bool:
+    def _handle_status_message(self, value: str, force_notice: bool = False) -> bool:
         status_prefixes = (
             "Window not found.",
             "Window class mismatch.",
@@ -279,7 +291,7 @@ class CaptureApp(tk.Tk):
 
         if value.startswith("Accessibility permission is required"):
             self.status_var.set("Accessibility permission required")
-            if not self.accessibility_permission_notice_shown:
+            if force_notice or not self.accessibility_permission_notice_shown:
                 self.accessibility_permission_notice_shown = True
                 messagebox.showinfo("Accessibility Permission", value)
             return True

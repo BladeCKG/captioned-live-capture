@@ -21,10 +21,13 @@ from chrome_live_caption_common import is_live_caption_target
 THREAD_STATE = threading.local()
 
 
-def dependency_error(target: TargetWindow | None = None) -> str | None:
+def dependency_error(target: TargetWindow | None = None, prompt: bool = False) -> str | None:
     backend = backend_for_target(target or TargetWindow())
     if hasattr(backend, "dependency_error"):
-        return backend.dependency_error()
+        try:
+            return backend.dependency_error(prompt=prompt)
+        except TypeError:
+            return backend.dependency_error()
     return None
 
 

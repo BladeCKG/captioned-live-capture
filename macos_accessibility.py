@@ -108,22 +108,28 @@ class AccessibilityTextRecord:
     height: float | None = None
 
 
-def dependency_error() -> str | None:
+def dependency_error(prompt: bool = False) -> str | None:
     if CGWindowListCopyWindowInfo is None or AXUIElementCreateApplication is None:
         return "Missing Python packages: pyobjc-framework-ApplicationServices"
-    if AXIsProcessTrusted is not None and not request_accessibility_permission():
+    if AXIsProcessTrusted is not None and not has_accessibility_permission():
+        if prompt and request_accessibility_permission():
+            return None
         return ACCESSIBILITY_PERMISSION_MESSAGE
     return None
 
 
-def request_accessibility_permission() -> bool:
+def has_accessibility_permission() -> bool:
     if AXIsProcessTrusted is None:
         return False
     try:
-        if AXIsProcessTrusted():
-            return True
+        return bool(AXIsProcessTrusted())
     except Exception:
         return False
+
+
+def request_accessibility_permission() -> bool:
+    if has_accessibility_permission():
+        return True
 
     if AXIsProcessTrustedWithOptions is None:
         return False
