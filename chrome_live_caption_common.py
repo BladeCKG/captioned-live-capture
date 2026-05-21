@@ -11,7 +11,7 @@ LIVE_CAPTION_PROCESS_NAME = "chrome.exe" if sys.platform.startswith("win") else 
 WORD_PATTERN = re.compile(r"\S+")
 STRIP_PUNCTUATION = ".,!?;:'\"()[]{}<>"
 LIVE_CAPTION_TAIL_WINDOW_WORDS = 140
-LIVE_CAPTION_MIN_ANCHOR_WORDS = 6
+LIVE_CAPTION_MIN_ANCHOR_WORDS = 4
 
 
 def is_live_caption_target(target) -> bool:

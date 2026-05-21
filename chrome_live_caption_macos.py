@@ -1,21 +1,36 @@
 from __future__ import annotations
 
+import time
+
 from capture_types import TargetWindow
 from chrome_live_caption_common import split_live_caption_paragraphs
 from macos_accessibility import (
     AccessibilityTextRecord,
+    accessibility_children,
+    ax_copy_attribute,
     create_application,
     dependency_error as accessibility_dependency_error,
     describe_window,
     find_ax_window,
     get_window_list,
+    kAXDescriptionAttribute,
     kCGWindowOwnerPID,
     kCGWindowOwnerName,
+    kAXRoleAttribute,
+    kAXTitleAttribute,
+    kAXValueAttribute,
+    kAXWindowRole,
+    MAX_ACCESSIBILITY_DEPTH,
+    MAX_ACCESSIBILITY_NODES,
+    node_rect,
     window_area,
-    extract_text_records,
     normalized_process_name,
     normalize_line,
 )
+
+TEXT_ROLES = {"AXStaticText", "AXTextArea"}
+WINDOW_REFRESH_INTERVAL_SECONDS = 1.0
+TEXT_NODE_RESCAN_INTERVAL_SECONDS = 0.75
 
 
 class MacChromeLiveCaptionSession:
@@ -24,10 +39,25 @@ class MacChromeLiveCaptionSession:
         self.window_info: dict | None = None
         self.app_element = None
         self.window_element = None
+        self.text_nodes: list = []
+        self.last_window_refresh_at = 0.0
+        self.last_text_scan_at = 0.0
 
-    def refresh(self) -> str | None:
+    def refresh(self, force: bool = False) -> str | None:
+        now = time.monotonic()
+        if (
+            not force
+            and self.window_element is not None
+            and (now - self.last_window_refresh_at) < WINDOW_REFRESH_INTERVAL_SECONDS
+        ):
+            return None
+
         window_info = find_live_caption_window_info(self.target)
+        self.last_window_refresh_at = now
         if window_info is None:
+            self.window_info = None
+            self.window_element = None
+            self.text_nodes = []
             return (
                 f"Window not found.\n"
                 f"Process: {self.target.process_name or '(any)'}\n"
@@ -42,6 +72,8 @@ class MacChromeLiveCaptionSession:
             return None
 
         self.window_info = window_info
+        self.text_nodes = []
+        self.last_text_scan_at = 0.0
         self.app_element = create_application(pid)
         self.window_element = find_ax_window(self.app_element, window_info)
         if self.window_element is None:
@@ -55,7 +87,20 @@ class MacChromeLiveCaptionSession:
         refresh_error = self.refresh()
         if refresh_error:
             return refresh_error
-        records = extract_text_records(self.window_element)
+
+        now = time.monotonic()
+        records = text_records_from_nodes(self.text_nodes)
+        should_rescan = not records or (now - self.last_text_scan_at) >= TEXT_NODE_RESCAN_INTERVAL_SECONDS
+        if should_rescan:
+            records, self.text_nodes = scan_live_caption_records(self.window_element)
+            self.last_text_scan_at = now
+        if not records:
+            refresh_error = self.refresh(force=True)
+            if refresh_error:
+                return refresh_error
+            records, self.text_nodes = scan_live_caption_records(self.window_element)
+            self.last_text_scan_at = time.monotonic()
+
         paragraph = live_caption_text_from_records(records)
         if not paragraph:
             return "(No text detected yet.)"
@@ -147,3 +192,68 @@ def dedupe_lines(lines: list[str]) -> list[str]:
             continue
         deduped.append(line)
     return deduped
+
+
+def scan_live_caption_records(window_element) -> tuple[list[AccessibilityTextRecord], list]:
+    records: list[AccessibilityTextRecord] = []
+    text_nodes: list = []
+    visited: set[str] = set()
+    node_count = 0
+
+    def walk(node, depth: int = 0) -> None:
+        nonlocal node_count
+        if node_count >= MAX_ACCESSIBILITY_NODES or depth > MAX_ACCESSIBILITY_DEPTH:
+            return
+        node_key = repr(node)
+        if node_key in visited:
+            return
+        visited.add(node_key)
+        node_count += 1
+
+        role = str(ax_copy_attribute(node, kAXRoleAttribute) or "")
+        if role in TEXT_ROLES:
+            record = text_record_from_node(node, role)
+            if record is not None:
+                records.append(record)
+                text_nodes.append(node)
+
+        if role in TEXT_ROLES and depth >= 2:
+            return
+        if role == (kAXWindowRole or "AXWindow") and depth >= 1:
+            return
+
+        for child in accessibility_children(node):
+            walk(child, depth + 1)
+
+    walk(window_element)
+    return records, text_nodes
+
+
+def text_records_from_nodes(nodes: list) -> list[AccessibilityTextRecord]:
+    records: list[AccessibilityTextRecord] = []
+    alive_nodes: list = []
+    for node in nodes:
+        role = str(ax_copy_attribute(node, kAXRoleAttribute) or "")
+        if role not in TEXT_ROLES:
+            continue
+        record = text_record_from_node(node, role)
+        if record is None:
+            continue
+        records.append(record)
+        alive_nodes.append(node)
+    if len(alive_nodes) != len(nodes):
+        nodes[:] = alive_nodes
+    return records
+
+
+def text_record_from_node(node, role: str) -> AccessibilityTextRecord | None:
+    for attribute in (kAXValueAttribute, kAXTitleAttribute, kAXDescriptionAttribute):
+        value = ax_copy_attribute(node, attribute)
+        if not isinstance(value, str):
+            continue
+        text = normalize_line(value)
+        if not text:
+            continue
+        x, y, width, height = node_rect(node)
+        return AccessibilityTextRecord(text, role, str(attribute), x, y, width, height)
+    return None
